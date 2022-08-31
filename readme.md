@@ -32,7 +32,7 @@ private s3 buckets and dynamodb tables are created ondemand if they do not alrea
 
 a custom git remote adding support for remotes like:
 
-`git remote add origin aws://${s3_bucket}+${dynamo_table}/${remote-name}`
+`git remote add origin aws://${s3_bucket}+${dynamo_table}/${remote_name}`
 
 the git remote binary provides a keygen for libsodium box [keypairs](https://doc.libsodium.org/public-key_cryptography/authenticated_encryption#key-pair-generation):
 
