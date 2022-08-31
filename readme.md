@@ -98,6 +98,7 @@ put s3://$bucket/myrepo/0000000000000000000000000000000000000000..daf8ea23a2aa08
 put s3://$bucket/myrepo/bundles_daf8ea23a2aa082a3eeffacbdda04917d14916cc
 put dynamodb://$table/$bucket/myrepo
 To aws://$bucket+$table/myrepo
+ * [new branch]      master -> master
 
 >> libaws s3-ls $bucket/ -r
 
