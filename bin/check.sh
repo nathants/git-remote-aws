@@ -9,6 +9,10 @@ which bodyclose   >/dev/null   || (cd ~ && go install github.com/timakin/bodyclo
 which nargs       >/dev/null   || (cd ~ && go install github.com/alexkohler/nargs/cmd/nargs@latest)
 which go-hasdefault >/dev/null || (cd ~ && go install github.com/nathants/go-hasdefault@latest)
 which go-hasdefer >/dev/null   || (cd ~ && go install github.com/nathants/go-hasdefer@latest)
+which govulncheck >/dev/null || (cd ~ && go install golang.org/x/vuln/cmd/govulncheck@latest)
+
+echo govulncheck
+govulncheck ./...
 
 echo go-hasdefault
 go-hasdefault $(find -type f -name "*.go") || true
