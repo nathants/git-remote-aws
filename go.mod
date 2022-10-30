@@ -3,11 +3,11 @@ module github.com/nathants/git-remote-aws
 go 1.19
 
 require (
-	github.com/aws/aws-sdk-go v1.44.88
-	github.com/gofrs/uuid v4.2.0+incompatible
-	github.com/nathants/go-dynamolock v0.0.0-20220825081021-ad9f5abfc920
-	github.com/nathants/go-libsodium v0.0.0-20220831072117-e3dd126b7757
-	github.com/nathants/libaws v0.0.0-20220824063848-e474c446059d
+	github.com/aws/aws-sdk-go v1.44.126
+	github.com/gofrs/uuid v4.3.0+incompatible
+	github.com/nathants/go-dynamolock v0.0.0-20220906090431-2ca0ddeec74a
+	github.com/nathants/go-libsodium v0.0.0-20220906084329-722ad0a11935
+	github.com/nathants/libaws v0.0.0-20221026083303-58dd1a7b4468
 )
 
 require (
@@ -19,10 +19,10 @@ require (
 	github.com/pkg/term v1.1.0 // indirect
 	github.com/r3labs/diff/v2 v2.15.1 // indirect
 	github.com/vmihailenco/msgpack v4.0.4+incompatible // indirect
-	golang.org/x/crypto v0.0.0-20220829220503-c86fa9a7ed90 // indirect
-	golang.org/x/net v0.0.0-20220127200216-cd36cc0744dd // indirect
-	golang.org/x/sync v0.0.0-20220819030929-7fc1605a5dde // indirect
-	golang.org/x/sys v0.0.0-20220811171246-fbc7d0a398ab // indirect
+	golang.org/x/crypto v0.1.0 // indirect
+	golang.org/x/net v0.1.0 // indirect
+	golang.org/x/sync v0.1.0 // indirect
+	golang.org/x/sys v0.1.0 // indirect
 	google.golang.org/appengine v1.6.6 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
