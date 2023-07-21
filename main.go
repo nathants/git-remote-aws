@@ -517,9 +517,15 @@ func gitHelper() {
 		panic(err)
 	}
 
+	ensure := os.Getenv("ensure") == "y"
+
 	// create bucket if needed
 	_, err = lib.S3BucketRegion(bucket)
 	if err != nil {
+		if !ensure {
+			fmt.Println("fatal: bucket did not exist and ensure=y env var not provided:", bucket)
+			os.Exit(1)
+		}
 		fmt.Fprintln(os.Stderr, "creating private s3 bucket:", bucket)
 		input, err := lib.S3EnsureInput("", bucket, []string{"acl=private"})
 		if err != nil {
@@ -537,6 +543,10 @@ func gitHelper() {
 		TableName: aws.String(table),
 	})
 	if err != nil {
+		if !ensure {
+			fmt.Println("fatal: dynamodb table did not exist and ensure=y env var not provided:", table)
+			os.Exit(1)
+		}
 		fmt.Fprintln(os.Stderr, "creating private dynamodb table:", table)
 		input, err := lib.DynamoDBEnsureInput("", table, []string{"id:s:hash"}, nil)
 		if err != nil {
