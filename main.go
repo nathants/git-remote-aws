@@ -523,7 +523,7 @@ func gitHelper() {
 	_, err = lib.S3BucketRegion(bucket)
 	if err != nil {
 		if !ensure {
-			fmt.Println("fatal: bucket did not exist and ensure=y env var not provided:", bucket)
+			fmt.Fprintln(os.Stderr, "fatal: bucket did not exist and ensure=y env var not provided:", bucket)
 			os.Exit(1)
 		}
 		fmt.Fprintln(os.Stderr, "creating private s3 bucket:", bucket)
@@ -544,7 +544,7 @@ func gitHelper() {
 	})
 	if err != nil {
 		if !ensure {
-			fmt.Println("fatal: dynamodb table did not exist and ensure=y env var not provided:", table)
+			fmt.Fprintln(os.Stderr, "fatal: dynamodb table did not exist and ensure=y env var not provided:", table)
 			os.Exit(1)
 		}
 		fmt.Fprintln(os.Stderr, "creating private dynamodb table:", table)
@@ -602,9 +602,9 @@ func exists(path string) bool {
 }
 
 func usage() {
-	fmt.Println("usage: git-remote-aws --keygen PUBLIC_KEY_FILE SECRET_KEY_FILE")
+	fmt.Fprintln(os.Stderr, "usage: git-remote-aws --keygen PUBLIC_KEY_FILE SECRET_KEY_FILE")
 	fmt.Println()
-	fmt.Println("example: git-remote-aws --keygen ~/.git-remote-aws/publickey ~/.git-remote-aws/secretkey")
+	fmt.Fprintln(os.Stderr, "example: git-remote-aws --keygen ~/.git-remote-aws/publickey ~/.git-remote-aws/secretkey")
 	os.Exit(1)
 }
 
@@ -619,12 +619,12 @@ func main() {
 		}
 		publicKeyFile := os.Args[2]
 		if exists(publicKeyFile) {
-			fmt.Println("fatal: public key file exists, refusing to overwrite:", publicKeyFile)
+			fmt.Fprintln(os.Stderr, "fatal: public key file exists, refusing to overwrite:", publicKeyFile)
 			os.Exit(1)
 		}
 		secretKeyFile := os.Args[3]
 		if exists(secretKeyFile) {
-			fmt.Println("fatal: secret key file exists, refusing to overwrite:", secretKeyFile)
+			fmt.Fprintln(os.Stderr, "fatal: secret key file exists, refusing to overwrite:", secretKeyFile)
 			os.Exit(1)
 		}
 		pk, sk, err := libsodium.BoxKeypair()
