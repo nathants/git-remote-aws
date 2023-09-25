@@ -1,12 +1,14 @@
 module github.com/nathants/git-remote-aws
 
-go 1.19
+go 1.21
+
+toolchain go1.21.1
 
 require (
 	github.com/aws/aws-sdk-go v1.45.15
 	github.com/gofrs/uuid v4.4.0+incompatible
 	github.com/nathants/go-dynamolock v0.0.0-20230112224452-f346d5763616
-	github.com/nathants/go-libsodium v0.0.0-20230112224931-5f7785035686
+	github.com/nathants/go-libsodium v0.0.0-20230925094700-179d2aeddf40
 	github.com/nathants/libaws v0.0.0-20230921110955-fd0bcc1b52b7
 )
 
