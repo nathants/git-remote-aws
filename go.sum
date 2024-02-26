@@ -1,7 +1,7 @@
 github.com/avast/retry-go v3.0.0+incompatible h1:4SOWQ7Qs+oroOTQOYnAHqelpCO0biHSxpiH9JdtuBj0=
 github.com/avast/retry-go v3.0.0+incompatible/go.mod h1:XtSnn+n/sHqQIpZ10K1qAevBhOOCWBLXXy3hyiqqBrY=
-github.com/aws/aws-sdk-go v1.50.16 h1:/KuHK+Sadp9BKXWWtMhPtBdj+PLIFCnQZxQnsuLhxKc=
-github.com/aws/aws-sdk-go v1.50.16/go.mod h1:LF8svs817+Nz+DmiMQKTO3ubZ/6IaTpq3TjupRn3Eqk=
+github.com/aws/aws-sdk-go v1.50.25 h1:vhiHtLYybv1Nhx3Kv18BBC6L0aPJHaG9aeEsr92W99c=
+github.com/aws/aws-sdk-go v1.50.25/go.mod h1:LF8svs817+Nz+DmiMQKTO3ubZ/6IaTpq3TjupRn3Eqk=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
@@ -24,10 +24,10 @@ github.com/mikesmitty/edkey v0.0.0-20170222072505-3356ea4e686a h1:eU8j/ClY2Ty3qd
 github.com/mikesmitty/edkey v0.0.0-20170222072505-3356ea4e686a/go.mod h1:v8eSC2SMp9/7FTKUncp7fH9IwPfw+ysMObcEz5FWheQ=
 github.com/nathants/go-dynamolock v0.0.0-20240209114312-224f5e9cfa47 h1:3oE33ek43UxUrTvXNiXMoitJCe0iI2+uE9jcEJ20HvA=
 github.com/nathants/go-dynamolock v0.0.0-20240209114312-224f5e9cfa47/go.mod h1:r6Ey5XHQR9DAQ+3ZE9l19gVO/oFtcRcQVU99j2N+b0w=
-github.com/nathants/go-libsodium v0.0.0-20231027090750-d2ba71f6d3b3 h1:vNZcEuZBFZvuvpKU3hOrxWN+apwKd0b4SHZ+l/7ouuw=
-github.com/nathants/go-libsodium v0.0.0-20231027090750-d2ba71f6d3b3/go.mod h1:iTgdoFCjROcZVrh7x0QEZ4elEb0u2Hx6wN5dZ8EcZaU=
-github.com/nathants/libaws v0.0.0-20240208095333-cd9202de1ca7 h1:dghhM027uMNfcJ8BGnTNk9O7OQrb6zqJuHWu7ae/lrg=
-github.com/nathants/libaws v0.0.0-20240208095333-cd9202de1ca7/go.mod h1:nepj1HwHNaOhcdBxhNCfYh+zGKBn40dQdlK9CEC65UA=
+github.com/nathants/go-libsodium v0.0.0-20240214112021-f9f20a5e9a68 h1:vgismTqXgDaTD3V23lJgCtZ/VFiJ6ypFrQK04RmNdnk=
+github.com/nathants/go-libsodium v0.0.0-20240214112021-f9f20a5e9a68/go.mod h1:JNUAw0JTR2Dg9wlwPuCzDMbO3t4Aa50XBUnehusPhu4=
+github.com/nathants/libaws v0.0.0-20240225101003-0a0e1f2651a9 h1:oJos+NJQcsbjyOHGhXBGJFF/pMunDikMnkEMvfIp8BI=
+github.com/nathants/libaws v0.0.0-20240225101003-0a0e1f2651a9/go.mod h1:c703zd8DdLNxULZFKKmdv/P5AhjCdTH3TswRYufnFkE=
 github.com/pkg/term v1.1.0 h1:xIAAdCMh3QIAy+5FrE8Ad8XoDhEU4ufwbaSozViP9kk=
 github.com/pkg/term v1.1.0/go.mod h1:E25nymQcrSllhX42Ok8MRm1+hyBdHY0dCeiKZ9jpNGw=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=

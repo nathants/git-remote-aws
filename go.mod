@@ -3,11 +3,11 @@ module github.com/nathants/git-remote-aws
 go 1.22
 
 require (
-	github.com/aws/aws-sdk-go v1.50.16
+	github.com/aws/aws-sdk-go v1.50.25
 	github.com/gofrs/uuid v4.4.0+incompatible
 	github.com/nathants/go-dynamolock v0.0.0-20240209114312-224f5e9cfa47
-	github.com/nathants/go-libsodium v0.0.0-20231027090750-d2ba71f6d3b3
-	github.com/nathants/libaws v0.0.0-20240208095333-cd9202de1ca7
+	github.com/nathants/go-libsodium v0.0.0-20240214112021-f9f20a5e9a68
+	github.com/nathants/libaws v0.0.0-20240225101003-0a0e1f2651a9
 )
 
 require (
