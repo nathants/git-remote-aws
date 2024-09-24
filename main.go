@@ -301,7 +301,7 @@ func publicKey() [][]byte {
 		panic("$HOME is empty")
 	}
 	publicKeyFile := home + "/.git-remote-aws/publickey"
-	env := os.Getenv("GIT_REMOTE_AWS_SECRETKEY")
+	env := os.Getenv("GIT_REMOTE_AWS_PUBLICKEY")
 	if env != "" {
 		publicKeyFile = env
 	}
