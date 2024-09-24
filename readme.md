@@ -133,7 +133,7 @@ get s3://$bucket/myrepo/bundles_daf8ea23a2aa082a3eeffacbdda04917d14916cc
 
 general encryption and decryption usage:
 
-```
+```bash
 >> git-remote-aws --keygen ~/.git-remote-aws/publickey ~/.git-remote-aws/secretkey
 
 >> echo hello | git-remote-aws --encrypt > ciphertext
