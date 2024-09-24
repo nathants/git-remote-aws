@@ -365,3 +365,12 @@ func TestPushBeforePullShouldFailSha256(t *testing.T) {
 		t.Fatal("should have failed because need to pull before push")
 	}
 }
+
+func TestEncryption() {
+	dir, cleanup := newTempdir()
+	defer cleanup()
+	runAt(dir, "bash", "-c", "echo hello | git-remote-aws -e > ciphertext")
+	runAt(dir, "bash", "-c", "[ \"$(cat ciphertext)\" != \"hello\" ]")
+	runAt(dir, "bash", "-c", "cat ciphertext | git-remote-aws -d > plaintext")
+	runAt(dir, "bash", "-c", "[ \"$(cat plaintext)\" = \"hello\" ]")
+}
