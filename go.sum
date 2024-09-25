@@ -26,6 +26,8 @@ github.com/nathants/go-dynamolock v0.0.0-20240916023517-88e8b1655590 h1:onDCCW1H
 github.com/nathants/go-dynamolock v0.0.0-20240916023517-88e8b1655590/go.mod h1:Jmk7dVsZZpip7lHjo/mEsdTpR1fPaHhLkzlDiO1ovQA=
 github.com/nathants/go-libsodium v0.0.0-20240622111306-9850dd1faf70 h1:wUz9Js7ErWy6wtymVobWeTM9UHuZEhzKR6x4eP9luTE=
 github.com/nathants/go-libsodium v0.0.0-20240622111306-9850dd1faf70/go.mod h1:uIdw7KOOAJLftutCwsI4cxKMtlCXRogPBB02mHV9gCE=
+github.com/nathants/go-libsodium v0.0.0-20240925121512-89c12c244c51 h1:pdF/Ln6rscai0F0FMhae00d839KZebnKn6+NrtfsXlQ=
+github.com/nathants/go-libsodium v0.0.0-20240925121512-89c12c244c51/go.mod h1:K8bpPvQjBdmFpkaVQXGZqH1rFKo/M/fLRo+2cU6qV94=
 github.com/nathants/libaws v0.0.0-20240921020425-affb1d600225 h1:cxwk4UXMNgUB8Oibis5wIc6o+OTuEbOm0XNhMKSvNFU=
 github.com/nathants/libaws v0.0.0-20240921020425-affb1d600225/go.mod h1:nKiG4K1OLCYLJqZVOSlNzpfTAHTcBDDuY7eA0ml6bTw=
 github.com/pkg/term v1.1.0 h1:xIAAdCMh3QIAy+5FrE8Ad8XoDhEU4ufwbaSozViP9kk=
