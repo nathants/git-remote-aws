@@ -430,6 +430,17 @@ func fetch(table, bucket, prefix, command string) {
 			fmt.Fprintln(os.Stderr, bundleStdout.String())
 			panic(err)
 		}
+
+		// remove
+		err = os.Remove(bundleFileEncrypted)
+		if err != nil {
+		    panic(err)
+		}
+		err = os.Remove(bundleFile)
+		if err != nil {
+		    panic(err)
+		}
+
 	}
 
 	// communicate with git caller
