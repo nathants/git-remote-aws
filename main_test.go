@@ -72,8 +72,12 @@ func getTestBucketAndTable() (string, string, string) {
 		panic("GIT_REMOTE_AWS_TEST_BUCKET")
 	}
 	table := os.Getenv("GIT_REMOTE_AWS_TEST_TABLE")
-	if bucket == "" {
+	if table == "" {
 		panic("GIT_REMOTE_AWS_TEST_TABLE")
+	}
+	err = os.Setenv("ensure", "y") // git-remote-aws should create dynamodb tables if needed
+	if err != nil {
+	    panic(err)
 	}
 	_, filename, _, _ := runtime.Caller(1)
 	root := path.Dir(filename)
@@ -366,7 +370,7 @@ func TestPushBeforePullShouldFailSha256(t *testing.T) {
 	}
 }
 
-func TestEncryption() {
+func TestEncryption(t *testing.T) {
 	dir, cleanup := newTempdir()
 	defer cleanup()
 	runAt(dir, "bash", "-c", "echo hello | git-remote-aws -e > ciphertext")
