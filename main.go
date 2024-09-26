@@ -175,6 +175,17 @@ func push(table, bucket, prefix, command string) {
 	if len(bundles) > 0 {
 		bundleTarget = hashEnd(last(bundles)) + ".." + branch
 		bundleName = hashEnd(last(bundles)) + ".." + hash
+	} else {
+		cmd := exec.Command("git", "log", "--format=\"%H%d\"", hash)
+		var stdout bytes.Buffer
+		cmd.Stdout = &stdout
+		err := cmd.Run()
+		if err != nil {
+			panic("failed to run: git log --format=\"%H%d\" " + hash)
+		}
+		if strings.Contains(stdout.String(), "grafted") {
+			panic("grafted repos, those created with `git clone --depth=n`, cannot be used. fetch history then try again: git fetch --unshallow")
+		}
 	}
 
 	// create bundle
