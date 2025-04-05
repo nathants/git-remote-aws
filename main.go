@@ -15,7 +15,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
-	"github.com/aws/aws-sdk-go/service/dynamodb/dynamodbattribute"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/nathants/go-dynamolock"
 	"github.com/nathants/go-libsodium"
@@ -96,24 +95,20 @@ func push(table, bucket, prefix, command string) {
 
 	// fetch and lock remote bundles, defering unlock
 	fmt.Fprintln(os.Stderr, "get dynamodb://"+table+"/"+bucket+"/"+prefix)
-	unlock, item, err := dynamolock.Lock(context.Background(), table, bucket+"/"+prefix, 10*time.Second, 1*time.Second)
+	unlock, _, repoMeta, err := dynamolock.Lock[RepoMeta](context.Background(), table, bucket+"/"+prefix, 10*time.Second, 1*time.Second)
 	if err != nil {
 		panic(err)
 	}
 	unlocked := false
 	defer func() {
 		if !unlocked {
-			err := unlock(item)
+			err := unlock(repoMeta)
 			if err != nil {
 				panic(err)
 			}
+			fmt.Fprintln(os.Stderr, "defer unlock put dynamodb://"+table+"/"+bucket+"/"+prefix, repoMeta)
 		}
 	}()
-	repoMeta := RepoMeta{}
-	err = dynamodbattribute.UnmarshalMap(item, &repoMeta)
-	if err != nil {
-		panic(err)
-	}
 	bundles := getBundles(bucket, repoMeta.BundlesS3Key)
 
 	if repoMeta.Branch != "" {
@@ -256,16 +251,11 @@ func push(table, bucket, prefix, command string) {
 		panic(err)
 	}
 
-	// unlock with new data
-	item, err = dynamodbattribute.MarshalMap(repoMeta)
+	err = unlock(repoMeta)
 	if err != nil {
 		panic(err)
 	}
-	fmt.Fprintln(os.Stderr, "put dynamodb://"+table+"/"+bucket+"/"+prefix)
-	err = unlock(item)
-	if err != nil {
-		panic(err)
-	}
+	fmt.Fprintln(os.Stderr, "put dynamodb://"+table+"/"+bucket+"/"+prefix, repoMeta)
 	unlocked = true
 
 	// delete previous bundles metadata when a new one is written
@@ -336,16 +326,15 @@ func fetch(table, bucket, prefix, command string) {
 	ref := parts[1]                                          // refs/heads/master
 	branch := last(strings.Split(ref, "/"))
 
-	repoMeta := RepoMeta{}
-
 	fmt.Fprintln(os.Stderr, "get dynamodb://"+table+"/"+bucket+"/"+prefix)
-	item, err := dynamolock.Read(context.Background(), table, bucket+"/"+prefix)
+	repoMeta, err := dynamolock.Read[RepoMeta](context.Background(), table, bucket+"/"+prefix)
 	if err != nil {
 		panic(err)
 	}
-	err = dynamodbattribute.UnmarshalMap(item, &repoMeta)
-	if err != nil {
-		panic(err)
+	if repoMeta == nil {
+		repoMeta = &RepoMeta{}
+	} else {
+		fmt.Fprintln(os.Stderr, "got meta:", repoMeta)
 	}
 
 	// fetch remote branch and fail if it exists and is not equal to local branch
@@ -460,27 +449,28 @@ func fetch(table, bucket, prefix, command string) {
 
 // git helper list
 func list(table, bucket, prefix string) {
-	repoMeta := RepoMeta{}
 
 	fmt.Fprintln(os.Stderr, "get dynamodb://"+table+"/"+bucket+"/"+prefix)
-	item, err := dynamolock.Read(context.Background(), table, bucket+"/"+prefix)
+	repoMeta, err := dynamolock.Read[RepoMeta](context.Background(), table, bucket+"/"+prefix)
 	if err != nil {
 		panic(err)
 	}
-	err = dynamodbattribute.UnmarshalMap(item, &repoMeta)
-	if err != nil {
-		panic(err)
+	if repoMeta == nil {
+		repoMeta = &RepoMeta{}
+	} else {
+		fmt.Fprintln(os.Stderr, "got meta:", repoMeta)
 	}
 
+
 	// find remote branch, falling back to default branch
-	branch := repoMeta.Branch
-	if branch == "" {
-		branch = defaultBranch
+	branch := defaultBranch
+	if repoMeta != nil && repoMeta.Branch != "" {
+		branch = repoMeta.Branch
 	}
 
 	// fetch remote bundles metadata
 	var remoteBundles []string
-	if repoMeta.BundlesS3Key != "" {
+	if repoMeta != nil && repoMeta.BundlesS3Key != "" {
 		remoteBundles = getBundles(bucket, repoMeta.BundlesS3Key)
 	}
 
@@ -571,11 +561,11 @@ func gitHelper() {
 			os.Exit(1)
 		}
 		fmt.Fprintln(os.Stderr, "creating private dynamodb table:", table)
-		input, err := lib.DynamoDBEnsureInput("", table, []string{"id:s:hash"}, nil)
+		input, ttl,  err := lib.DynamoDBEnsureInput("", table, []string{"id:s:hash"}, nil)
 		if err != nil {
 			panic(err)
 		}
-		err = lib.DynamoDBEnsure(context.Background(), input, false)
+		err = lib.DynamoDBEnsure(context.Background(), input, ttl, false)
 		if err != nil {
 			panic(err)
 		}

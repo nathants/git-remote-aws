@@ -180,15 +180,15 @@ func listKeys(bucket, prefix string) []string {
 func TestBasic(t *testing.T) {
 	dir, cleanup := newTempdir()
 	defer cleanup()
-	// -
+
 	table, bucket, prefix := getTestBucketAndTable()
 	defer cleanupAws(table, bucket, prefix)
-	// -
+
 	runAt(dir, "bash", "-c", "cat ~/.git-remote-aws/publickey > .publickeys")
 	runAt(dir, "git", "init")
 	runAt(dir, "git", "config", "commit.gpgsign", "false")
 	runAt(dir, "git", "remote", "add", "origin", "aws://"+bucket+"+"+table+"/"+prefix)
-	// -
+
 	runAt(dir, "bash", "-c", "echo foo >> bar")
 	runAt(dir, "git", "add", ".")
 	runAt(dir, "git", "commit", "-m", "message")
@@ -202,7 +202,7 @@ func TestBasic(t *testing.T) {
 		fmt.Println("expected:", lib.PformatAlways(expected))
 		t.Fatal()
 	}
-	// -
+
 	runAt(dir, "bash", "-c", "echo foo >> bar")
 	runAt(dir, "git", "add", ".")
 	runAt(dir, "git", "commit", "-m", "message")
@@ -217,7 +217,7 @@ func TestBasic(t *testing.T) {
 		fmt.Println("expected:", lib.PformatAlways(expected))
 		t.Fatal()
 	}
-	// -
+
 	dir2, cleanup2 := newTempdir()
 	defer cleanup2()
 	runAt(dir2, "git", "clone", "aws://"+bucket+"+"+table+"/"+prefix)
@@ -236,15 +236,15 @@ func TestBasic(t *testing.T) {
 func TestBasicSha256(t *testing.T) {
 	dir, cleanup := newTempdir()
 	defer cleanup()
-	// -
+
 	table, bucket, prefix := getTestBucketAndTable()
 	defer cleanupAws(table, bucket, prefix)
-	// -
+
 	runAt(dir, "bash", "-c", "cat ~/.git-remote-aws/publickey > .publickeys")
 	runAt(dir, "git", "init", "--object-format=sha256")
 	runAt(dir, "git", "config", "commit.gpgsign", "false")
 	runAt(dir, "git", "remote", "add", "origin", "aws://"+bucket+"+"+table+"/"+prefix)
-	// -
+
 	runAt(dir, "bash", "-c", "echo foo >> bar")
 	runAt(dir, "git", "add", ".")
 	runAt(dir, "git", "commit", "-m", "message")
@@ -258,7 +258,7 @@ func TestBasicSha256(t *testing.T) {
 		fmt.Println("expected:", lib.PformatAlways(expected))
 		t.Fatal()
 	}
-	// -
+
 	runAt(dir, "bash", "-c", "echo foo >> bar")
 	runAt(dir, "git", "add", ".")
 	runAt(dir, "git", "commit", "-m", "message")
@@ -273,7 +273,7 @@ func TestBasicSha256(t *testing.T) {
 		fmt.Println("expected:", lib.PformatAlways(expected))
 		t.Fatal()
 	}
-	// -
+
 	dir2, cleanup2 := newTempdir()
 	defer cleanup2()
 	runAt(dir2, "git", "clone", "aws://"+bucket+"+"+table+"/"+prefix)
@@ -292,15 +292,15 @@ func TestBasicSha256(t *testing.T) {
 func TestPushBeforePullShouldFailSha256(t *testing.T) {
 	dir, cleanup := newTempdir()
 	defer cleanup()
-	// -
+
 	table, bucket, prefix := getTestBucketAndTable()
 	defer cleanupAws(table, bucket, prefix)
-	// -
+
 	runAt(dir, "bash", "-c", "cat ~/.git-remote-aws/publickey > .publickeys")
 	runAt(dir, "git", "init", "--object-format=sha256")
 	runAt(dir, "git", "config", "commit.gpgsign", "false")
 	runAt(dir, "git", "remote", "add", "origin", "aws://"+bucket+"+"+table+"/"+prefix)
-	// -
+
 	runAt(dir, "bash", "-c", "echo foo >> bar")
 	runAt(dir, "git", "add", ".")
 	runAt(dir, "git", "commit", "-m", "message")
@@ -314,7 +314,7 @@ func TestPushBeforePullShouldFailSha256(t *testing.T) {
 		fmt.Println("expected:", lib.PformatAlways(expected))
 		t.Fatal()
 	}
-	// -
+
 	runAt(dir, "bash", "-c", "echo foo >> bar")
 	runAt(dir, "git", "add", ".")
 	runAt(dir, "git", "commit", "-m", "message")
@@ -329,7 +329,7 @@ func TestPushBeforePullShouldFailSha256(t *testing.T) {
 		fmt.Println("expected:", lib.PformatAlways(expected))
 		t.Fatal()
 	}
-	// -
+
 	dir2, cleanup2 := newTempdir()
 	defer cleanup2()
 	runAt(dir2, "git", "clone", "aws://"+bucket+"+"+table+"/"+prefix)
@@ -345,7 +345,7 @@ func TestPushBeforePullShouldFailSha256(t *testing.T) {
 		fmt.Println("expected:", lib.PformatAlways(expected))
 		t.Fatal()
 	}
-	// -
+
 	runAt(dir2, "bash", "-c", "echo foo >> bar")
 	runAt(dir2, "git", "add", ".")
 	runAt(dir2, "git", "commit", "-m", "message")
@@ -361,7 +361,7 @@ func TestPushBeforePullShouldFailSha256(t *testing.T) {
 		fmt.Println("expected:", lib.PformatAlways(expected))
 		t.Fatal()
 	}
-	// -
+
 	runAt(dir, "bash", "-c", "echo should fail >> bar")
 	runAt(dir, "git", "add", ".")
 	runAt(dir, "git", "commit", "-m", "message")
@@ -377,4 +377,105 @@ func TestEncryption(t *testing.T) {
 	runAt(dir, "bash", "-c", "[ \"$(cat ciphertext)\" != \"hello\" ]")
 	runAt(dir, "bash", "-c", "cat ciphertext | git-remote-aws -d > plaintext")
 	runAt(dir, "bash", "-c", "[ \"$(cat plaintext)\" = \"hello\" ]")
+}
+
+func TestBranchesAndTagsAreBanned(t *testing.T) {
+	dir, cleanup := newTempdir()
+	defer cleanup()
+	table, bucket, prefix := getTestBucketAndTable()
+	defer cleanupAws(table, bucket, prefix)
+
+	runAt(dir, "bash", "-c", "cat ~/.git-remote-aws/publickey > .publickeys")
+	runAt(dir, "git", "init")
+	runAt(dir, "git", "config", "commit.gpgsign", "false")
+	runAt(dir, "git", "remote", "add", "origin", "aws://"+bucket+"+"+table+"/"+prefix)
+
+	runAt(dir, "bash", "-c", "echo foo > bar")
+	runAt(dir, "git", "add", ".")
+	runAt(dir, "git", "commit", "-m", "initial commit")
+	runAt(dir, "git", "push", "-u", "origin", "master")
+
+	runAt(dir, "git", "checkout", "-b", "other-branch")
+	runAt(dir, "bash", "-c", "echo extra >> extra.txt")
+	runAt(dir, "git", "add", ".")
+	runAt(dir, "git", "commit", "-m", "second branch commit")
+	if runAtErr(dir, "git", "push", "origin", "other-branch") == nil {
+		t.Fatal("expected error when pushing an additional branch")
+	}
+
+	runAt(dir, "git", "tag", "test-tag")
+	if runAtErr(dir, "git", "push", "origin", "test-tag") == nil {
+		t.Fatal("expected error when pushing a tag")
+	}
+
+}
+
+func TestMutatingHistoryIsBanned(t *testing.T) {
+	dir, cleanup := newTempdir()
+	defer cleanup()
+	table, bucket, prefix := getTestBucketAndTable()
+	defer cleanupAws(table, bucket, prefix)
+
+	runAt(dir, "bash", "-c", "cat ~/.git-remote-aws/publickey > .publickeys")
+	runAt(dir, "git", "init")
+	runAt(dir, "git", "config", "commit.gpgsign", "false")
+	runAt(dir, "git", "remote", "add", "origin", "aws://"+bucket+"+"+table+"/"+prefix)
+
+	runAt(dir, "bash", "-c", "echo foo > bar")
+	runAt(dir, "git", "add", ".")
+	runAt(dir, "git", "commit", "-m", "A")
+	runAt(dir, "git", "push", "-u", "origin", "master")
+
+	runAt(dir, "bash", "-c", "echo bar >> bar")
+	runAt(dir, "git", "add", ".")
+	runAt(dir, "git", "commit", "-m", "B")
+	runAt(dir, "git", "push", "-u", "origin", "master")
+
+	runAt(dir, "git", "reset", "--hard", "HEAD~1")
+	runAt(dir, "bash", "-c", "echo baz >> bar")
+	runAt(dir, "git", "add", ".")
+	runAt(dir, "git", "commit", "-m", "C")
+
+	if runAtErr(dir, "git", "push", "-u", "origin", "master", "--force") == nil {
+		t.Fatal("expected error when force pushing")
+	}
+}
+
+func TestPushWithoutPullShouldFail(t *testing.T) {
+	dir, cleanup := newTempdir()
+	defer cleanup()
+	table, bucket, prefix := getTestBucketAndTable()
+	defer cleanupAws(table, bucket, prefix)
+
+	runAt(dir, "bash", "-c", "cat ~/.git-remote-aws/publickey > .publickeys")
+	runAt(dir, "git", "init")
+	runAt(dir, "git", "config", "commit.gpgsign", "false")
+	runAt(dir, "git", "remote", "add", "origin", "aws://"+bucket+"+"+table+"/"+prefix)
+
+	// first commit and push from dir
+	runAt(dir, "bash", "-c", "echo first > file.txt")
+	runAt(dir, "git", "add", ".")
+	runAt(dir, "git", "commit", "-m", "commit 1")
+	runAt(dir, "git", "push", "-u", "origin", "master")
+
+	// clone into dir2
+	dir2, cleanup2 := newTempdir()
+	defer cleanup2()
+	runAt(dir2, "git", "clone", "aws://"+bucket+"+"+table+"/"+prefix)
+
+	// commit and push from dir2
+	runAt(dir2+"/"+prefix, "bash", "-c", "echo second > file2.txt")
+	runAt(dir2+"/"+prefix, "git", "add", ".")
+	runAt(dir2+"/"+prefix, "git", "commit", "-m", "commit 2")
+	runAt(dir2+"/"+prefix, "git", "push", "origin", "master")
+
+	// meanwhile, dir never pulled the commit from dir2
+	// if we try to push a new commit from dir, it should fail
+	runAt(dir, "bash", "-c", "echo third > file3.txt")
+	runAt(dir, "git", "add", ".")
+	runAt(dir, "git", "commit", "-m", "commit 3")
+
+	if runAtErr(dir, "git", "push", "origin", "master") == nil {
+		t.Fatal("expected error when pushing without pulling the latest commit")
+	}
 }
