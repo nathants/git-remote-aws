@@ -58,7 +58,7 @@ func getBundles(bucket, s3Key string) []string {
 		if err != nil {
 			panic(err)
 		}
-		for _, bundle := range strings.Split(string(data), "\n") {
+		for bundle := range strings.SplitSeq(string(data), "\n") {
 			if bundle != "" {
 				bundles = append(bundles, bundle)
 			}
