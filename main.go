@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/dynamodb"
-	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/nathants/go-dynamolock"
 	"github.com/nathants/go-libsodium"
 	"github.com/nathants/libaws/lib"
@@ -48,7 +48,7 @@ func hashEnd(x string) string {
 func getBundles(bucket, s3Key string) []string {
 	var bundles []string
 	fmt.Fprintln(os.Stderr, "get s3://"+bucket+"/"+s3Key)
-	out, err := lib.S3Client().GetObject(&s3.GetObjectInput{
+	out, err := lib.S3Client().GetObject(context.Background(), &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(s3Key),
 	})
@@ -95,9 +95,17 @@ func push(table, bucket, prefix, command string) {
 
 	// fetch and lock remote bundles, defering unlock
 	fmt.Fprintln(os.Stderr, "get dynamodb://"+table+"/"+bucket+"/"+prefix)
-	unlock, _, repoMeta, err := dynamolock.Lock[RepoMeta](context.Background(), table, bucket+"/"+prefix, 10*time.Second, 1*time.Second)
+	unlock, _, repoMeta, err := dynamolock.Lock[RepoMeta](context.Background(), &dynamolock.LockInput{
+		Table:             table,
+		ID:                bucket + "/" + prefix,
+		HeartbeatMaxAge:   10 * time.Second,
+		HeartbeatInterval: 1 * time.Second,
+	})
 	if err != nil {
 		panic(err)
+	}
+	if repoMeta == nil {
+		repoMeta = &RepoMeta{}
 	}
 	unlocked := false
 	defer func() {
@@ -227,7 +235,7 @@ func push(table, bucket, prefix, command string) {
 		panic(err)
 	}
 	fmt.Fprintln(os.Stderr, "put s3://"+bucket+"/"+prefix+"/"+bundleName)
-	_, err = lib.S3Client().PutObject(&s3.PutObjectInput{
+	_, err = lib.S3Client().PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(prefix + "/" + bundleName),
 		Body:   f,
@@ -242,7 +250,7 @@ func push(table, bucket, prefix, command string) {
 	oldBundlesS3Key := repoMeta.BundlesS3Key
 	repoMeta.BundlesS3Key = prefix + "/" + "bundles_" + hash
 	fmt.Fprintln(os.Stderr, "put s3://"+bucket+"/"+repoMeta.BundlesS3Key)
-	_, err = lib.S3Client().PutObject(&s3.PutObjectInput{
+	_, err = lib.S3Client().PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(repoMeta.BundlesS3Key),
 		Body:   bytes.NewReader(bundleData),
@@ -260,7 +268,7 @@ func push(table, bucket, prefix, command string) {
 
 	// delete previous bundles metadata when a new one is written
 	if oldBundlesS3Key != repoMeta.BundlesS3Key && oldBundlesS3Key != "" {
-		_, err = lib.S3Client().DeleteObject(&s3.DeleteObjectInput{
+		_, err = lib.S3Client().DeleteObject(context.Background(), &s3.DeleteObjectInput{
 			Bucket: aws.String(bucket),
 			Key:    aws.String(oldBundlesS3Key),
 		})
@@ -380,7 +388,7 @@ func fetch(table, bucket, prefix, command string) {
 
 		// fetch object
 		fmt.Fprintln(os.Stderr, "get s3://"+bucket+"/"+prefix+"/"+bundle)
-		out, err := lib.S3Client().GetObject(&s3.GetObjectInput{
+		out, err := lib.S3Client().GetObject(context.Background(), &s3.GetObjectInput{
 			Bucket: aws.String(bucket),
 			Key:    aws.String(prefix + "/" + bundle),
 		})
@@ -434,11 +442,11 @@ func fetch(table, bucket, prefix, command string) {
 		// remove
 		err = os.Remove(bundleFileEncrypted)
 		if err != nil {
-		    panic(err)
+			panic(err)
 		}
 		err = os.Remove(bundleFile)
 		if err != nil {
-		    panic(err)
+			panic(err)
 		}
 
 	}
@@ -460,7 +468,6 @@ func list(table, bucket, prefix string) {
 	} else {
 		fmt.Fprintln(os.Stderr, "got meta:", repoMeta)
 	}
-
 
 	// find remote branch, falling back to default branch
 	branch := defaultBranch
@@ -552,7 +559,7 @@ func gitHelper() {
 	}
 
 	// create table if needed
-	_, err = lib.DynamoDBClient().DescribeTableWithContext(context.Background(), &dynamodb.DescribeTableInput{
+	_, err = lib.DynamoDBClient().DescribeTable(context.Background(), &dynamodb.DescribeTableInput{
 		TableName: aws.String(table),
 	})
 	if err != nil {
@@ -561,7 +568,7 @@ func gitHelper() {
 			os.Exit(1)
 		}
 		fmt.Fprintln(os.Stderr, "creating private dynamodb table:", table)
-		input, ttl,  err := lib.DynamoDBEnsureInput("", table, []string{"id:s:hash"}, nil)
+		input, ttl, err := lib.DynamoDBEnsureInput("", table, []string{"id:s:hash"}, nil)
 		if err != nil {
 			panic(err)
 		}

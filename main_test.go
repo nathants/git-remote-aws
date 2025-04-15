@@ -12,9 +12,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/dynamodb"
-	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/gofrs/uuid"
 	"github.com/nathants/libaws/lib"
 )
@@ -77,7 +79,7 @@ func getTestBucketAndTable() (string, string, string) {
 	}
 	err = os.Setenv("ensure", "y") // git-remote-aws should create dynamodb tables if needed
 	if err != nil {
-	    panic(err)
+		panic(err)
 	}
 	_, filename, _, _ := runtime.Caller(1)
 	root := path.Dir(filename)
@@ -123,31 +125,33 @@ func setCommitDate() {
 }
 
 func cleanupAws(table, bucket, prefix string) {
-	_, err := lib.DynamoDBClient().DeleteItem(&dynamodb.DeleteItemInput{
+	_, err := lib.DynamoDBClient().DeleteItem(context.Background(), &dynamodb.DeleteItemInput{
 		TableName: aws.String(table),
-		Key: map[string]*dynamodb.AttributeValue{
-			"id": {S: aws.String(bucket + "/" + prefix)},
+		Key: map[string]ddbtypes.AttributeValue{
+			"id": &ddbtypes.AttributeValueMemberS{
+				Value: bucket + "/" + prefix,
+			},
 		},
 	})
 	if err != nil {
 		panic(err)
 	}
-	out, err := lib.S3Client().ListObjects(&s3.ListObjectsInput{
+	out, err := lib.S3Client().ListObjects(context.Background(), &s3.ListObjectsInput{
 		Bucket: aws.String(bucket),
 		Prefix: aws.String(prefix),
 	})
 	if err != nil {
 		panic(err)
 	}
-	objects := []*s3.ObjectIdentifier{}
+	objects := []s3types.ObjectIdentifier{}
 	for _, c := range out.Contents {
-		objects = append(objects, &s3.ObjectIdentifier{
+		objects = append(objects, s3types.ObjectIdentifier{
 			Key: c.Key,
 		})
 	}
-	_, err = lib.S3Client().DeleteObjects(&s3.DeleteObjectsInput{
+	_, err = lib.S3Client().DeleteObjects(context.Background(), &s3.DeleteObjectsInput{
 		Bucket: aws.String(bucket),
-		Delete: &s3.Delete{
+		Delete: &s3types.Delete{
 			Objects: objects,
 		},
 	})
@@ -158,7 +162,7 @@ func cleanupAws(table, bucket, prefix string) {
 
 func listKeys(bucket, prefix string) []string {
 	var got []string
-	out, err := lib.S3Client().ListObjects(&s3.ListObjectsInput{
+	out, err := lib.S3Client().ListObjects(context.Background(), &s3.ListObjectsInput{
 		Bucket: aws.String(bucket),
 		Prefix: aws.String(prefix),
 	})
@@ -370,7 +374,7 @@ func TestPushBeforePullShouldFailSha256(t *testing.T) {
 	}
 }
 
-func TestEncryption(t *testing.T) {
+func TestEncryption(_ *testing.T) {
 	dir, cleanup := newTempdir()
 	defer cleanup()
 	runAt(dir, "bash", "-c", "echo hello | git-remote-aws -e > ciphertext")
@@ -407,7 +411,6 @@ func TestBranchesAndTagsAreBanned(t *testing.T) {
 	if runAtErr(dir, "git", "push", "origin", "test-tag") == nil {
 		t.Fatal("expected error when pushing a tag")
 	}
-
 }
 
 func TestMutatingHistoryIsBanned(t *testing.T) {
