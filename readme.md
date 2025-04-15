@@ -14,7 +14,7 @@ each remote can hold one and only one branch.
 
 bundles in s3 are immutable, and force push is not allowed.
 
-bundles are encrypted with libsodium [secretstream](https://doc.libsodium.org/secret-key_cryptography/secretstream). user keys are libsodium box [keypairs](https://doc.libsodium.org/public-key_cryptography/authenticated_encryption#key-pair-generation). authorized user public keys are added to a `.publickeys` file in the git repository. to add or remove authorized users, update the publickeys file, then create and push to a new remote or delete s3 data and recreate an existing remote.
+bundles are encrypted with libsodium [secretstream](https://doc.libsodium.org/secret-key_cryptography/secretstream). user keys are libsodium box [keypairs](https://doc.libsodium.org/public-key_cryptography/authenticated_encryption#key-pair-generation). authorized user public keys are added to a `.publickeys` file in the git repository. to add or remove authorized users, update the `.publickeys` file, then create and push to a new remote or delete s3 data and recreate an existing remote.
 
 metadata is stored unencrypted:
 - branch name
