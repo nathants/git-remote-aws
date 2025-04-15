@@ -75,8 +75,8 @@ func capabilities() {
 }
 
 type RepoMeta struct {
-	BundlesS3Key string `json:"bundles"`
-	Branch       string `json:"branch"`
+	BundlesS3Key string `json:"bundles" dynamodbav:"bundles"`
+	Branch       string `json:"branch" dynamodbav:"branch"`
 }
 
 // git helper push
