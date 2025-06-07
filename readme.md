@@ -1,48 +1,48 @@
-# git-remote-aws
+# Git-Remote-AWS
 
-## why
+## Why
 
-encrypted git hosting should be easy.
+Encrypted Git hosting should be easy.
 
-## how
+## How
 
-encrypted git [bundles](https://git-scm.com/docs/git-bundle) are stored in s3.
+Encrypted Git [bundles](https://git-scm.com/docs/git-bundle) are stored in S3.
 
-compare and swap against dynamodb updates an ordered list of bundles. this enables multiple writers to safely collaborate on a single remote.
+Compare and swap against DynamoDB updates an ordered list of bundles. This enables multiple writers to safely collaborate on a single remote.
 
-each remote can hold one and only one branch.
+Each remote can hold one and only one branch.
 
-bundles in s3 are immutable, and force push is not allowed.
+Bundles in S3 are immutable, and force push is not allowed.
 
-bundles are encrypted with libsodium [secretstream](https://doc.libsodium.org/secret-key_cryptography/secretstream). user keys are libsodium box [keypairs](https://doc.libsodium.org/public-key_cryptography/authenticated_encryption#key-pair-generation). authorized user public keys are added to a `.publickeys` file in the git repository. to add or remove authorized users, update the `.publickeys` file, then create and push to a new remote or delete s3 data and recreate an existing remote.
+Bundles are encrypted with Libsodium [secretstream](https://doc.libsodium.org/secret-key_cryptography/secretstream). User keys are Libsodium box [keypairs](https://doc.libsodium.org/public-key_cryptography/authenticated_encryption#key-pair-generation). Authorized user public keys are added to a `.publickeys` file in the Git repository. To add or remove authorized users, update the `.publickeys` file, then create and push to a new remote or delete S3 data and recreate an existing remote.
 
-metadata is stored unencrypted:
-- branch name
-- remote name
-- git hash for the start and end of each bundle
+Metadata is stored unencrypted:
+- Branch name
+- Remote name
+- Git hash for the start and end of each bundle
 
-data is stored encrypted:
-- git bundles
+Data is stored encrypted:
+- Git bundles
 
-both git sha1 and sha256 hashing algorithms are supported.
+Both Git SHA1 and SHA256 hashing algorithms are supported.
 
-private s3 buckets and dynamodb tables are created ondemand if they do not already exist.
+Private S3 buckets and DynamoDB tables are created ondemand if they do not already exist.
 
-## what
+## What
 
-a custom git remote adding support for remotes like:
+A custom Git remote adding support for remotes like:
 
 `git remote add origin aws://${s3_bucket}+${dynamo_table}/${remote_name}`
 
-the git remote binary provides a keygen for libsodium box [keypairs](https://doc.libsodium.org/public-key_cryptography/authenticated_encryption#key-pair-generation):
+The Git remote binary provides a keygen for Libsodium box [keypairs](https://doc.libsodium.org/public-key_cryptography/authenticated_encryption#key-pair-generation):
 
 `git-remote-aws --keygen ~/.git-remote-aws/publickey ~/.git-remote-aws/secretkey`
 
-the default path for your secret key is `~/.git-remote-aws/secretkey`. this can be changed via environment variable `GIT_REMOTE_AWS_SECRETKEY`.
+The default path for your secret key is `~/.git-remote-aws/secretkey`. This can be changed via environment variable `GIT_REMOTE_AWS_SECRETKEY`.
 
-## install
+## Install
 
-install go and libsodium from your package manager:
+Install Go and Libsodium from your package manager:
 
 ```bash
 brew install         go     libsodium     # homebrew
@@ -51,7 +51,7 @@ sudo apk add         go     libsodium-dev # alpine
 sudo apt-get install golang libsodium-dev # ubuntu/debian
 ```
 
-install the binary and update PATH:
+Install the binary and update PATH:
 
 ```bash
 go install github.com/nathants/git-remote-aws@latest
@@ -59,7 +59,7 @@ go install github.com/nathants/git-remote-aws@latest
 export PATH=$PATH:$(go env GOPATH)/bin
 ```
 
-## usage
+## Usage
 
 ```bash
 >> git init
@@ -131,7 +131,7 @@ get s3://$bucket/myrepo/bundles_daf8ea23a2aa082a3eeffacbdda04917d14916cc
 
 ```
 
-general encryption and decryption usage:
+General encryption and decryption usage:
 
 ```bash
 >> git-remote-aws --keygen ~/.git-remote-aws/publickey ~/.git-remote-aws/secretkey
