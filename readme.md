@@ -36,9 +36,11 @@ A custom Git remote adding support for remotes like:
 
 The Git remote binary provides a keygen for Libsodium box [keypairs](https://doc.libsodium.org/public-key_cryptography/authenticated_encryption#key-pair-generation):
 
-`git-remote-aws --keygen ~/.git-remote-aws/publickey ~/.git-remote-aws/secretkey`
+`git-remote-aws --keygen`
 
-The default path for your secret key is `~/.git-remote-aws/secretkey`. This can be changed via environment variable `GIT_REMOTE_AWS_SECRETKEY`.
+This outputs export statements for `GIT_REMOTE_AWS_PUBLICKEY` and `GIT_REMOTE_AWS_SECRETKEY`. Add them to `~/.bashrc`.
+
+Alternatively, `GIT_REMOTE_AWS_SECRETKEY_CMD` can specify a command on PATH that outputs the secret key. It receives the remote URL as an argument.
 
 ## Install
 
@@ -62,15 +64,16 @@ export PATH=$PATH:$(go env GOPATH)/bin
 ## Usage
 
 ```bash
+>> git-remote-aws --keygen
+export GIT_REMOTE_AWS_PUBLICKEY=...
+export GIT_REMOTE_AWS_SECRETKEY=...
+# add these to ~/.bashrc, then start a new shell
+
 >> git init
 
 >> git remote add origin aws://${bucket}+${table}/myrepo
 
->> mkdir -p ~/.git-remote-aws
-
->> git-remote-aws --keygen ~/.git-remote-aws/publickey ~/.git-remote-aws/secretkey
-
->> cat ~/.git-remote-aws/publickey >> .publickeys
+>> echo $GIT_REMOTE_AWS_PUBLICKEY >> .publickeys
 
 >> git add .
 
@@ -134,8 +137,6 @@ get s3://$bucket/myrepo/bundles_daf8ea23a2aa082a3eeffacbdda04917d14916cc
 General encryption and decryption usage:
 
 ```bash
->> git-remote-aws --keygen ~/.git-remote-aws/publickey ~/.git-remote-aws/secretkey
-
 >> echo hello | git-remote-aws --encrypt > ciphertext
 
 >> cat ciphertext | git-remote-aws --decrypt

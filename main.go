@@ -282,52 +282,56 @@ func push(table, bucket, prefix, command string) {
 	fmt.Println("")
 }
 
-func secretKey() []byte {
-	home := os.Getenv("HOME")
-	if home == "" {
-		panic("$HOME is empty")
-	}
-	secretKeyFile := home + "/.git-remote-aws/secretkey"
+func secretKey(remotePath string) []byte {
+	// Check for direct key in env var
 	env := os.Getenv("GIT_REMOTE_AWS_SECRETKEY")
 	if env != "" {
-		secretKeyFile = env
+		secretKey, err := hex.DecodeString(strings.TrimSpace(env))
+		if err != nil {
+			panic(fmt.Errorf("GIT_REMOTE_AWS_SECRETKEY is not valid hex: %w", err))
+		}
+		return secretKey
 	}
-	data, err := os.ReadFile(secretKeyFile)
-	if err != nil {
-		panic(err)
+	// Check for command to fetch key
+	cmdEnv := os.Getenv("GIT_REMOTE_AWS_SECRETKEY_CMD")
+	if cmdEnv != "" {
+		var cmd *exec.Cmd
+		if remotePath != "" {
+			cmd = exec.Command(cmdEnv, remotePath)
+		} else {
+			cmd = exec.Command(cmdEnv)
+		}
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		err := cmd.Run()
+		if err != nil {
+			panic(fmt.Errorf("GIT_REMOTE_AWS_SECRETKEY_CMD failed: %w: %s", err, stderr.String()))
+		}
+		secretKey, err := hex.DecodeString(strings.TrimSpace(stdout.String()))
+		if err != nil {
+			panic(fmt.Errorf("GIT_REMOTE_AWS_SECRETKEY_CMD output is not valid hex: %w", err))
+		}
+		return secretKey
 	}
-	secretKey, err := hex.DecodeString(string(data))
-	if err != nil {
-		panic(err)
-	}
-	return secretKey
+	panic("GIT_REMOTE_AWS_SECRETKEY or GIT_REMOTE_AWS_SECRETKEY_CMD must be set")
 }
 
 func publicKey() [][]byte {
-	var publicKeys [][]byte
-	home := os.Getenv("HOME")
-	if home == "" {
-		panic("$HOME is empty")
-	}
-	publicKeyFile := home + "/.git-remote-aws/publickey"
 	env := os.Getenv("GIT_REMOTE_AWS_PUBLICKEY")
-	if env != "" {
-		publicKeyFile = env
+	if env == "" {
+		panic("GIT_REMOTE_AWS_PUBLICKEY must be set")
 	}
-	data, err := os.ReadFile(publicKeyFile)
+	publicKey, err := hex.DecodeString(strings.TrimSpace(env))
 	if err != nil {
-		panic(err)
+		panic(fmt.Errorf("GIT_REMOTE_AWS_PUBLICKEY is not valid hex: %w", err))
 	}
-	publicKey, err := hex.DecodeString(string(data))
-	if err != nil {
-		panic(err)
-	}
-	publicKeys = append(publicKeys, publicKey)
-	return publicKeys
+	return [][]byte{publicKey}
 }
 
 // git helper fetch
-func fetch(table, bucket, prefix, command string) {
+func fetch(table, bucket, prefix, remotePath, command string) {
 
 	// parse args to get branch name
 	parts := strings.SplitN(command[len("fetch "):], " ", 2) // fetch $shasum refs/heads/$branch
@@ -420,7 +424,7 @@ func fetch(table, bucket, prefix, command string) {
 		if err != nil {
 			panic(err)
 		}
-		err = libsodium.StreamDecryptRecipients(secretKey(), r, w)
+		err = libsodium.StreamDecryptRecipients(secretKey(remotePath), r, w)
 		if err != nil {
 			panic(err)
 		}
@@ -605,7 +609,7 @@ func gitHelper() {
 		} else if strings.HasPrefix(command, "push ") {
 			push(table, bucket, prefix, command)
 		} else if strings.HasPrefix(command, "fetch ") {
-			fetch(table, bucket, prefix, command)
+			fetch(table, bucket, prefix, remotePath, command)
 		} else if command == "" {
 			os.Exit(0)
 		} else {
@@ -616,19 +620,14 @@ func gitHelper() {
 
 }
 
-func exists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
-}
-
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: git-remote-aws --keygen PUBLIC_KEY_FILE SECRET_KEY_FILE")
+	fmt.Fprintln(os.Stderr, "usage: git-remote-aws --keygen")
 	fmt.Println()
-	fmt.Fprintln(os.Stderr, "example: git-remote-aws --keygen ~/.git-remote-aws/publickey ~/.git-remote-aws/secretkey")
+	fmt.Fprintln(os.Stderr, "example: eval $(git-remote-aws --keygen)")
 	fmt.Println()
-	fmt.Fprintln(os.Stderr, "example: git-remote-aws --encrypt < cat plaintext > ciphertext")
+	fmt.Fprintln(os.Stderr, "example: echo hello | git-remote-aws --encrypt > ciphertext")
 	fmt.Println()
-	fmt.Fprintln(os.Stderr, "example: git-remote-aws --decrypt < cat ciphertext > plaintext")
+	fmt.Fprintln(os.Stderr, "example: cat ciphertext | git-remote-aws --decrypt")
 	os.Exit(1)
 }
 
@@ -665,7 +664,7 @@ func encrypt() {
 }
 
 func decrypt() {
-	err := libsodium.StreamDecryptRecipients(secretKey(), os.Stdin, os.Stdout)
+	err := libsodium.StreamDecryptRecipients(secretKey(""), os.Stdin, os.Stdout)
 	if err != nil {
 		panic(err)
 	}
@@ -681,31 +680,12 @@ func main() {
 	case "-d", "--decrypt":
 		decrypt()
 	case "-k", "--keygen":
-		if len(os.Args) < 4 {
-			usage()
-		}
-		publicKeyFile := os.Args[2]
-		if exists(publicKeyFile) {
-			fmt.Fprintln(os.Stderr, "fatal: public key file exists, refusing to overwrite:", publicKeyFile)
-			os.Exit(1)
-		}
-		secretKeyFile := os.Args[3]
-		if exists(secretKeyFile) {
-			fmt.Fprintln(os.Stderr, "fatal: secret key file exists, refusing to overwrite:", secretKeyFile)
-			os.Exit(1)
-		}
 		pk, sk, err := libsodium.BoxKeypair()
 		if err != nil {
 			panic(err)
 		}
-		err = os.WriteFile(publicKeyFile, []byte(hex.EncodeToString(pk)), 0600)
-		if err != nil {
-			panic(err)
-		}
-		err = os.WriteFile(secretKeyFile, []byte(hex.EncodeToString(sk)), 0600)
-		if err != nil {
-			panic(err)
-		}
+		fmt.Printf("export GIT_REMOTE_AWS_PUBLICKEY=%s\n", hex.EncodeToString(pk))
+		fmt.Printf("export GIT_REMOTE_AWS_SECRETKEY=%s\n", hex.EncodeToString(sk))
 	default:
 		gitHelper()
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -18,6 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/gofrs/uuid"
+	"github.com/nathants/go-libsodium"
 	"github.com/nathants/libaws/lib"
 )
 
@@ -28,6 +30,31 @@ func runAtErr(dir string, args ...string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Dir = dir
 	return cmd.Run()
+}
+
+func setupEphemeralKeys() (publicKeyHex string, cleanup func()) {
+	libsodium.Init()
+	pk, sk, err := libsodium.BoxKeypair()
+	if err != nil {
+		panic(err)
+	}
+	publicKeyHex = hex.EncodeToString(pk)
+	secretKeyHex := hex.EncodeToString(sk)
+	oldPub := os.Getenv("GIT_REMOTE_AWS_PUBLICKEY")
+	oldSec := os.Getenv("GIT_REMOTE_AWS_SECRETKEY")
+	err = os.Setenv("GIT_REMOTE_AWS_PUBLICKEY", publicKeyHex)
+	if err != nil {
+		panic(err)
+	}
+	err = os.Setenv("GIT_REMOTE_AWS_SECRETKEY", secretKeyHex)
+	if err != nil {
+		panic(err)
+	}
+	cleanup = func() {
+		_ = os.Setenv("GIT_REMOTE_AWS_PUBLICKEY", oldPub)
+		_ = os.Setenv("GIT_REMOTE_AWS_SECRETKEY", oldSec)
+	}
+	return publicKeyHex, cleanup
 }
 
 func runAt(dir string, args ...string) {
@@ -188,7 +215,10 @@ func TestBasic(t *testing.T) {
 	table, bucket, prefix := getTestBucketAndTable()
 	defer cleanupAws(table, bucket, prefix)
 
-	runAt(dir, "bash", "-c", "cat ~/.git-remote-aws/publickey > .publickeys")
+	publicKey, cleanupKeys := setupEphemeralKeys()
+	defer cleanupKeys()
+
+	runAt(dir, "bash", "-c", "echo "+publicKey+" > .publickeys")
 	runAt(dir, "git", "init")
 	runAt(dir, "git", "config", "commit.gpgsign", "false")
 	runAt(dir, "git", "remote", "add", "origin", "aws://"+bucket+"+"+table+"/"+prefix)
@@ -244,7 +274,10 @@ func TestBasicSha256(t *testing.T) {
 	table, bucket, prefix := getTestBucketAndTable()
 	defer cleanupAws(table, bucket, prefix)
 
-	runAt(dir, "bash", "-c", "cat ~/.git-remote-aws/publickey > .publickeys")
+	publicKey, cleanupKeys := setupEphemeralKeys()
+	defer cleanupKeys()
+
+	runAt(dir, "bash", "-c", "echo "+publicKey+" > .publickeys")
 	runAt(dir, "git", "init", "--object-format=sha256")
 	runAt(dir, "git", "config", "commit.gpgsign", "false")
 	runAt(dir, "git", "remote", "add", "origin", "aws://"+bucket+"+"+table+"/"+prefix)
@@ -300,7 +333,10 @@ func TestPushBeforePullShouldFailSha256(t *testing.T) {
 	table, bucket, prefix := getTestBucketAndTable()
 	defer cleanupAws(table, bucket, prefix)
 
-	runAt(dir, "bash", "-c", "cat ~/.git-remote-aws/publickey > .publickeys")
+	publicKey, cleanupKeys := setupEphemeralKeys()
+	defer cleanupKeys()
+
+	runAt(dir, "bash", "-c", "echo "+publicKey+" > .publickeys")
 	runAt(dir, "git", "init", "--object-format=sha256")
 	runAt(dir, "git", "config", "commit.gpgsign", "false")
 	runAt(dir, "git", "remote", "add", "origin", "aws://"+bucket+"+"+table+"/"+prefix)
@@ -375,6 +411,9 @@ func TestPushBeforePullShouldFailSha256(t *testing.T) {
 }
 
 func TestEncryption(_ *testing.T) {
+	_, cleanupKeys := setupEphemeralKeys()
+	defer cleanupKeys()
+
 	dir, cleanup := newTempdir()
 	defer cleanup()
 	runAt(dir, "bash", "-c", "echo hello | git-remote-aws -e > ciphertext")
@@ -389,7 +428,10 @@ func TestBranchesAndTagsAreBanned(t *testing.T) {
 	table, bucket, prefix := getTestBucketAndTable()
 	defer cleanupAws(table, bucket, prefix)
 
-	runAt(dir, "bash", "-c", "cat ~/.git-remote-aws/publickey > .publickeys")
+	publicKey, cleanupKeys := setupEphemeralKeys()
+	defer cleanupKeys()
+
+	runAt(dir, "bash", "-c", "echo "+publicKey+" > .publickeys")
 	runAt(dir, "git", "init")
 	runAt(dir, "git", "config", "commit.gpgsign", "false")
 	runAt(dir, "git", "remote", "add", "origin", "aws://"+bucket+"+"+table+"/"+prefix)
@@ -419,7 +461,10 @@ func TestMutatingHistoryIsBanned(t *testing.T) {
 	table, bucket, prefix := getTestBucketAndTable()
 	defer cleanupAws(table, bucket, prefix)
 
-	runAt(dir, "bash", "-c", "cat ~/.git-remote-aws/publickey > .publickeys")
+	publicKey, cleanupKeys := setupEphemeralKeys()
+	defer cleanupKeys()
+
+	runAt(dir, "bash", "-c", "echo "+publicKey+" > .publickeys")
 	runAt(dir, "git", "init")
 	runAt(dir, "git", "config", "commit.gpgsign", "false")
 	runAt(dir, "git", "remote", "add", "origin", "aws://"+bucket+"+"+table+"/"+prefix)
@@ -450,7 +495,10 @@ func TestPushWithoutPullShouldFail(t *testing.T) {
 	table, bucket, prefix := getTestBucketAndTable()
 	defer cleanupAws(table, bucket, prefix)
 
-	runAt(dir, "bash", "-c", "cat ~/.git-remote-aws/publickey > .publickeys")
+	publicKey, cleanupKeys := setupEphemeralKeys()
+	defer cleanupKeys()
+
+	runAt(dir, "bash", "-c", "echo "+publicKey+" > .publickeys")
 	runAt(dir, "git", "init")
 	runAt(dir, "git", "config", "commit.gpgsign", "false")
 	runAt(dir, "git", "remote", "add", "origin", "aws://"+bucket+"+"+table+"/"+prefix)
