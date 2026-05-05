@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"regexp"
 	"strings"
 	"time"
 
@@ -40,31 +41,57 @@ func last[T any](s []T) T {
 	return s[len(s)-1]
 }
 
+var bundleNamePattern = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})\.\.([0-9a-f]{40}|[0-9a-f]{64})$`)
+
 // "aaa..bbb" => "bbb"
 func hashEnd(x string) string {
-	return strings.SplitN(x, "..", 2)[1]
+	return bundleNameParts(x)[1]
+}
+
+func bundleNameParts(bundle string) []string {
+	parts := bundleNamePattern.FindStringSubmatch(bundle)
+	if parts == nil {
+		panic("invalid bundle name: " + bundle)
+	}
+	if len(parts[1]) != len(parts[2]) {
+		panic("invalid bundle name with mixed hash lengths: " + bundle)
+	}
+	return parts[1:]
+}
+
+func bundleNamesFromMetadata(location string, data []byte) []string {
+	var bundles []string
+	for bundle := range strings.SplitSeq(string(data), "\n") {
+		if bundle != "" {
+			bundleNameParts(bundle)
+			bundles = append(bundles, bundle)
+		}
+	}
+	if len(bundles) == 0 {
+		panic("bundles metadata is empty: " + location)
+	}
+	return bundles
 }
 
 func getBundles(bucket, s3Key string) []string {
-	var bundles []string
-	fmt.Fprintln(os.Stderr, "get s3://"+bucket+"/"+s3Key)
+	if s3Key == "" {
+		return nil
+	}
+	location := "s3://" + bucket + "/" + s3Key
+	fmt.Fprintln(os.Stderr, "get "+location)
 	out, err := lib.S3Client().GetObject(context.Background(), &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(s3Key),
 	})
-	if err == nil {
-		defer func() { _ = out.Body.Close() }()
-		data, err := io.ReadAll(out.Body)
-		if err != nil {
-			panic(err)
-		}
-		for bundle := range strings.SplitSeq(string(data), "\n") {
-			if bundle != "" {
-				bundles = append(bundles, bundle)
-			}
-		}
+	if err != nil {
+		panic(fmt.Errorf("failed to get bundles metadata %s: %w", location, err))
 	}
-	return bundles
+	defer func() { _ = out.Body.Close() }()
+	data, err := io.ReadAll(out.Body)
+	if err != nil {
+		panic(fmt.Errorf("failed to read bundles metadata %s: %w", location, err))
+	}
+	return bundleNamesFromMetadata(location, data)
 }
 
 // git helper capabilities
@@ -79,6 +106,34 @@ type RepoMeta struct {
 	Branch       string `json:"branch" dynamodbav:"branch"`
 }
 
+func refBranch(ref string) string {
+	branch, ok := strings.CutPrefix(ref, "refs/heads/")
+	if !ok {
+		panic("ref is not a branch: " + ref)
+	}
+	if branch == "" || strings.Contains(branch, "/") {
+		panic("branch names cannot be empty or contain slashes: " + branch)
+	}
+	return branch
+}
+
+func gitBranchContains(branch, hash string) (bool, bool) {
+	cmd := exec.Command("git", "merge-base", "--is-ancestor", hash, branch)
+	err := cmd.Run()
+	if err == nil {
+		return true, true
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		switch exitErr.ExitCode() {
+		case 1:
+			return false, true
+		case 128:
+			return false, false
+		}
+	}
+	panic("failed to run: git merge-base --is-ancestor " + hash + " " + branch)
+}
+
 // git helper push
 func push(table, bucket, prefix, command string) {
 
@@ -86,8 +141,11 @@ func push(table, bucket, prefix, command string) {
 	refs := strings.SplitN(command[len("push "):], ":", 2)
 	localRef := refs[0]
 	remoteRef := refs[1]
-	localBranch := last(strings.Split(localRef, "/"))
-	remoteBranch := last(strings.Split(remoteRef, "/"))
+	if strings.HasPrefix(localRef, "+") || strings.HasPrefix(remoteRef, "+") {
+		panic("force push is not allowed")
+	}
+	localBranch := refBranch(localRef)
+	remoteBranch := refBranch(remoteRef)
 	if localBranch != remoteBranch {
 		panic(fmt.Sprintf("local branch is different from remote branch, %s != %s", localBranch, remoteBranch))
 	}
@@ -110,7 +168,7 @@ func push(table, bucket, prefix, command string) {
 	unlocked := false
 	defer func() {
 		if !unlocked {
-			err := unlock(repoMeta)
+			err := unlock(context.Background(), repoMeta)
 			if err != nil {
 				panic(err)
 			}
@@ -148,14 +206,8 @@ func push(table, bucket, prefix, command string) {
 	// if remote has data and latest hash is unknown locally, we need to pull before pushing
 	if len(bundles) > 0 {
 		hashRemote := hashEnd(last(bundles))
-		cmd := exec.Command("git", "branch", branch, "--contains", hashRemote)
-		var stdout bytes.Buffer
-		cmd.Stdout = &stdout
-		err := cmd.Run()
-		if err != nil {
-			panic("failed to run: git branch --contains " + branch + " " + hashRemote)
-		}
-		if stdout.String() == "" {
+		contains, _ := gitBranchContains(branch, hashRemote)
+		if !contains {
 			panic("remote has new commits, pull before pushing")
 		}
 	}
@@ -259,7 +311,7 @@ func push(table, bucket, prefix, command string) {
 		panic(err)
 	}
 
-	err = unlock(repoMeta)
+	err = unlock(context.Background(), repoMeta)
 	if err != nil {
 		panic(err)
 	}
@@ -336,7 +388,7 @@ func fetch(table, bucket, prefix, remotePath, command string) {
 	// parse args to get branch name
 	parts := strings.SplitN(command[len("fetch "):], " ", 2) // fetch $shasum refs/heads/$branch
 	ref := parts[1]                                          // refs/heads/master
-	branch := last(strings.Split(ref, "/"))
+	branch := refBranch(ref)
 
 	fmt.Fprintln(os.Stderr, "get dynamodb://"+table+"/"+bucket+"/"+prefix)
 	repoMeta, err := dynamolock.Read[RepoMeta](context.Background(), table, bucket+"/"+prefix)
@@ -369,11 +421,8 @@ func fetch(table, bucket, prefix, remotePath, command string) {
 	var bundlesToFetch []string
 	for _, bundle := range reverse(bundles) {
 		hash := hashEnd(bundle)
-		cmd := exec.Command("git", "branch", branch, "--contains", hash)
-		var stdout bytes.Buffer
-		cmd.Stdout = &stdout
-		err := cmd.Run()
-		if err == nil && stdout.String() != "" {
+		contains, known := gitBranchContains(branch, hash)
+		if known && contains {
 			break
 		}
 		bundlesToFetch = append(bundlesToFetch, bundle)
@@ -399,19 +448,23 @@ func fetch(table, bucket, prefix, remotePath, command string) {
 		if err != nil {
 			panic(err)
 		}
-		bundleFileEncrypted := tempdir + "/" + bundle
-		defer func() { _ = out.Body.Close() }()
+		bundleFileEncrypted := path.Join(tempdir, bundle)
 		f, err := os.Create(bundleFileEncrypted)
 		if err != nil {
+			_ = out.Body.Close()
 			panic(err)
 		}
 		_, err = io.Copy(f, out.Body)
+		closeBodyErr := out.Body.Close()
+		closeFileErr := f.Close()
 		if err != nil {
 			panic(err)
 		}
-		err = f.Close()
-		if err != nil {
-			panic(err)
+		if closeBodyErr != nil {
+			panic(closeBodyErr)
+		}
+		if closeFileErr != nil {
+			panic(closeFileErr)
 		}
 
 		// decrypt
@@ -422,11 +475,20 @@ func fetch(table, bucket, prefix, remotePath, command string) {
 		}
 		w, err := os.Create(bundleFile)
 		if err != nil {
+			_ = r.Close()
 			panic(err)
 		}
 		err = libsodium.StreamDecryptRecipients(secretKey(remotePath), r, w)
+		closeReadErr := r.Close()
+		closeWriteErr := w.Close()
 		if err != nil {
 			panic(err)
+		}
+		if closeReadErr != nil {
+			panic(closeReadErr)
+		}
+		if closeWriteErr != nil {
+			panic(closeWriteErr)
 		}
 
 		// import

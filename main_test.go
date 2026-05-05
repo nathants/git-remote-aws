@@ -10,6 +10,7 @@ import (
 	"path"
 	"reflect"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 
@@ -19,17 +20,47 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/gofrs/uuid"
+	"github.com/nathants/go-dynamolock"
 	"github.com/nathants/go-libsodium"
 	"github.com/nathants/libaws/lib"
 )
 
-func runAtErr(dir string, args ...string) error {
+func runAtResult(dir string, args ...string) (string, string, error) {
 	fmt.Println("runAt", dir, args)
 	cmd := exec.Command(args[0], args[1:]...)
-	cmd.Stderr = os.Stderr
-	cmd.Stdout = os.Stdout
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 	cmd.Dir = dir
-	return cmd.Run()
+	err := cmd.Run()
+	return stdout.String(), stderr.String(), err
+}
+
+func assertRunAtErrContains(t *testing.T, dir, expected string, args ...string) {
+	t.Helper()
+	stdout, stderr, err := runAtResult(dir, args...)
+	if err == nil {
+		t.Fatalf("expected command to fail with %q, but it succeeded: %v\nstdout:\n%s\nstderr:\n%s", expected, args, stdout, stderr)
+	}
+	output := stdout + stderr
+	if !strings.Contains(output, expected) {
+		t.Fatalf("expected command failure to contain %q: %v: %v\nstdout:\n%s\nstderr:\n%s", expected, args, err, stdout, stderr)
+	}
+}
+
+func mustPanicContains(t *testing.T, expected string, f func()) {
+	t.Helper()
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatalf("expected panic containing %q", expected)
+		}
+		if !strings.Contains(fmt.Sprint(r), expected) {
+			t.Fatalf("expected panic containing %q, got %q", expected, fmt.Sprint(r))
+		}
+	}()
+	f()
 }
 
 func setupEphemeralKeys() (publicKeyHex string, cleanup func()) {
@@ -83,6 +114,52 @@ func runAtOut(dir string, args ...string) string {
 	return strings.TrimRight(stdout.String(), "\n")
 }
 
+func repoRoot() string {
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		panic("runtime.Caller")
+	}
+	return path.Dir(filename)
+}
+
+func buildGitRemoteAws() string {
+	root := repoRoot()
+	binary := path.Join(root, "git-remote-aws")
+	cmd := exec.Command("go", "build", "-o", binary, ".")
+	cmd.Dir = root
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	err := cmd.Run()
+	if err != nil {
+		panic(err)
+	}
+	ensureGitRemoteAwsOnPath(binary)
+	return binary
+}
+
+func ensureGitRemoteAwsOnPath(binary string) {
+	root := path.Dir(binary)
+	sep := string(os.PathListSeparator)
+	pathEnv := os.Getenv("PATH")
+	if pathEnv == "" {
+		_ = os.Setenv("PATH", root)
+	} else {
+		_ = os.Setenv("PATH", root+sep+pathEnv)
+	}
+	actual, err := exec.LookPath("git-remote-aws")
+	if err != nil {
+		panic(err)
+	}
+	if path.Clean(actual) != path.Clean(binary) {
+		panic(fmt.Sprintf("git-remote-aws on PATH should resolve to %s, got %s", binary, actual))
+	}
+}
+
+func configureGitIdentity(dir string) {
+	runAt(dir, "git", "config", "user.name", "git-remote-aws test")
+	runAt(dir, "git", "config", "user.email", "git-remote-aws-test@example.com")
+}
+
 func getTestBucketAndTable() (string, string, string) {
 	prefix := newUuid()
 	account := os.Getenv("GIT_REMOTE_AWS_TEST_ACCOUNT")
@@ -108,27 +185,7 @@ func getTestBucketAndTable() (string, string, string) {
 	if err != nil {
 		panic(err)
 	}
-	_, filename, _, _ := runtime.Caller(1)
-	root := path.Dir(filename)
-	cmd := exec.Command("go", "build", ".")
-	cmd.Dir = root
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	err = cmd.Run()
-	if err != nil {
-		panic(err)
-	}
-	var stdout bytes.Buffer
-	cmd = exec.Command("which", "git-remote-aws")
-	cmd.Stdout = &stdout
-	err = cmd.Run()
-	if err != nil {
-		panic(err)
-	}
-	actualRoot := path.Dir(stdout.String())
-	if root != actualRoot {
-		panic(fmt.Sprintf("should have found git-remote-aws on PATH at %s, was found at %s", root, actualRoot))
-	}
+	buildGitRemoteAws()
 	setCommitDate()
 	return table, bucket, prefix
 }
@@ -146,7 +203,7 @@ func newUuid() string {
 }
 
 func setCommitDate() {
-	date := "Aug 1 00:00:00 2022"
+	date := "Aug 1 00:00:00 2022 +0000"
 	_ = os.Setenv("GIT_COMMITTER_DATE", date)
 	_ = os.Setenv("GIT_AUTHOR_DATE", date)
 }
@@ -175,6 +232,9 @@ func cleanupAws(table, bucket, prefix string) {
 		objects = append(objects, s3types.ObjectIdentifier{
 			Key: c.Key,
 		})
+	}
+	if len(objects) == 0 {
+		return
 	}
 	_, err = lib.S3Client().DeleteObjects(context.Background(), &s3.DeleteObjectsInput{
 		Bucket: aws.String(bucket),
@@ -205,7 +265,122 @@ func listKeys(bucket, prefix string) []string {
 			got = append(got, tail)
 		}
 	}
+	sort.Strings(got)
 	return got
+}
+
+func gitLog(dir string) []string {
+	return strings.Split(runAtOut(dir, "git", "log", "--format=%H"), "\n")
+}
+
+func assertBundleKeys(t *testing.T, bucket, prefix string, expected []string) {
+	t.Helper()
+	got := listKeys(bucket, prefix)
+	want := append([]string{}, expected...)
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		fmt.Println("got:", lib.PformatAlways(got))
+		fmt.Println("expected:", lib.PformatAlways(want))
+		t.Fatal()
+	}
+}
+
+func assertLog(t *testing.T, dir string, expected []string) {
+	t.Helper()
+	got := gitLog(dir)
+	if !reflect.DeepEqual(got, expected) {
+		fmt.Println("got:", lib.PformatAlways(got))
+		fmt.Println("expected:", lib.PformatAlways(expected))
+		t.Fatal()
+	}
+}
+
+func getRepoMeta(table, bucket, prefix string) *RepoMeta {
+	repoMeta, err := dynamolock.Read[RepoMeta](context.Background(), table, bucket+"/"+prefix)
+	if err != nil {
+		panic(err)
+	}
+	if repoMeta == nil {
+		panic("repo metadata not found")
+	}
+	return repoMeta
+}
+
+func deleteObject(bucket, key string) {
+	_, err := lib.S3Client().DeleteObject(context.Background(), &s3.DeleteObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		panic(err)
+	}
+}
+
+func putObject(bucket, key, body string) {
+	_, err := lib.S3Client().PutObject(context.Background(), &s3.PutObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+		Body:   strings.NewReader(body),
+	})
+	if err != nil {
+		panic(err)
+	}
+}
+
+func TestBundleNameParts(t *testing.T) {
+	sha1A := strings.Repeat("a", 40)
+	sha1B := strings.Repeat("b", 40)
+	sha256A := strings.Repeat("1", 64)
+	sha256B := strings.Repeat("2", 64)
+
+	got := bundleNameParts(sha1A + ".." + sha1B)
+	if !reflect.DeepEqual(got, []string{sha1A, sha1B}) {
+		t.Fatalf("got %v", got)
+	}
+	if got := hashEnd(sha1A + ".." + sha1B); got != sha1B {
+		t.Fatalf("hashEnd got %s, expected %s", got, sha1B)
+	}
+
+	got = bundleNameParts(sha256A + ".." + sha256B)
+	if !reflect.DeepEqual(got, []string{sha256A, sha256B}) {
+		t.Fatalf("got %v", got)
+	}
+	if got := hashEnd(sha256A + ".." + sha256B); got != sha256B {
+		t.Fatalf("hashEnd got %s, expected %s", got, sha256B)
+	}
+
+	mustPanicContains(t, "invalid bundle name", func() { bundleNameParts("../" + sha1A + ".." + sha1B) })
+	mustPanicContains(t, "invalid bundle name", func() { bundleNameParts(sha1A + "/" + sha1B) })
+	mustPanicContains(t, "invalid bundle name", func() { bundleNameParts(strings.ToUpper(sha1A) + ".." + sha1B) })
+	mustPanicContains(t, "invalid bundle name", func() { bundleNameParts(sha1A + "." + sha1B) })
+	mustPanicContains(t, "invalid bundle name", func() { bundleNameParts(sha1A + ".." + strings.Repeat("g", 40)) })
+	mustPanicContains(t, "mixed hash lengths", func() { bundleNameParts(sha1A + ".." + sha256B) })
+}
+
+func TestBundleNamesFromMetadata(t *testing.T) {
+	sha1A := strings.Repeat("a", 40)
+	sha1B := strings.Repeat("b", 40)
+	sha1C := strings.Repeat("c", 40)
+
+	got := bundleNamesFromMetadata("test metadata", []byte(sha1A+".."+sha1B+"\n"+sha1B+".."+sha1C+"\n"))
+	if !reflect.DeepEqual(got, []string{sha1A + ".." + sha1B, sha1B + ".." + sha1C}) {
+		t.Fatalf("got %v", got)
+	}
+
+	mustPanicContains(t, "bundles metadata is empty", func() { bundleNamesFromMetadata("test metadata", nil) })
+	mustPanicContains(t, "bundles metadata is empty", func() { bundleNamesFromMetadata("test metadata", []byte("\n\n")) })
+	mustPanicContains(t, "invalid bundle name", func() { bundleNamesFromMetadata("test metadata", []byte("../"+sha1A+".."+sha1B)) })
+}
+
+func TestRefBranch(t *testing.T) {
+	if got := refBranch("refs/heads/master"); got != "master" {
+		t.Fatalf("got %s, expected master", got)
+	}
+
+	mustPanicContains(t, "ref is not a branch", func() { refBranch("refs/tags/v1") })
+	mustPanicContains(t, "ref is not a branch", func() { refBranch("HEAD") })
+	mustPanicContains(t, "branch names cannot be empty or contain slashes", func() { refBranch("refs/heads/") })
+	mustPanicContains(t, "branch names cannot be empty or contain slashes", func() { refBranch("refs/heads/feature/slash") })
 }
 
 func TestBasic(t *testing.T) {
@@ -221,50 +396,30 @@ func TestBasic(t *testing.T) {
 	runAt(dir, "bash", "-c", "echo "+publicKey+" > .publickeys")
 	runAt(dir, "git", "init")
 	runAt(dir, "git", "config", "commit.gpgsign", "false")
+	configureGitIdentity(dir)
 	runAt(dir, "git", "remote", "add", "origin", "aws://"+bucket+"+"+table+"/"+prefix)
 
 	runAt(dir, "bash", "-c", "echo foo >> bar")
 	runAt(dir, "git", "add", ".")
 	runAt(dir, "git", "commit", "-m", "message")
+	first := runAtOut(dir, "git", "rev-parse", "HEAD")
 	runAt(dir, "git", "push", "-u", "origin", "master")
-	got := listKeys(bucket, prefix)
-	expected := []string{
-		"0000000000000000000000000000000000000000..2179a6fcb6b47819cd97e8fa0c1723a9e7221988",
-	}
-	if !reflect.DeepEqual(got, expected) {
-		fmt.Println("got:", lib.PformatAlways(got))
-		fmt.Println("expected:", lib.PformatAlways(expected))
-		t.Fatal()
-	}
+	assertBundleKeys(t, bucket, prefix, []string{zeroHash + ".." + first})
 
 	runAt(dir, "bash", "-c", "echo foo >> bar")
 	runAt(dir, "git", "add", ".")
 	runAt(dir, "git", "commit", "-m", "message")
+	second := runAtOut(dir, "git", "rev-parse", "HEAD")
 	runAt(dir, "git", "push", "-u", "origin", "master")
-	got = listKeys(bucket, prefix)
-	expected = []string{
-		"0000000000000000000000000000000000000000..2179a6fcb6b47819cd97e8fa0c1723a9e7221988",
-		"2179a6fcb6b47819cd97e8fa0c1723a9e7221988..5147bba478721d4569ae366ae9c70227e7036f9c",
-	}
-	if !reflect.DeepEqual(got, expected) {
-		fmt.Println("got:", lib.PformatAlways(got))
-		fmt.Println("expected:", lib.PformatAlways(expected))
-		t.Fatal()
-	}
+	assertBundleKeys(t, bucket, prefix, []string{
+		zeroHash + ".." + first,
+		first + ".." + second,
+	})
 
 	dir2, cleanup2 := newTempdir()
 	defer cleanup2()
 	runAt(dir2, "git", "clone", "aws://"+bucket+"+"+table+"/"+prefix)
-	got = strings.Split(runAtOut(dir2+"/"+prefix, "git", "log", "--format=%H"), "\n")
-	expected = []string{
-		"5147bba478721d4569ae366ae9c70227e7036f9c",
-		"2179a6fcb6b47819cd97e8fa0c1723a9e7221988",
-	}
-	if !reflect.DeepEqual(got, expected) {
-		fmt.Println("got:", lib.PformatAlways(got))
-		fmt.Println("expected:", lib.PformatAlways(expected))
-		t.Fatal()
-	}
+	assertLog(t, dir2+"/"+prefix, []string{second, first})
 }
 
 func TestBasicSha256(t *testing.T) {
@@ -280,50 +435,30 @@ func TestBasicSha256(t *testing.T) {
 	runAt(dir, "bash", "-c", "echo "+publicKey+" > .publickeys")
 	runAt(dir, "git", "init", "--object-format=sha256")
 	runAt(dir, "git", "config", "commit.gpgsign", "false")
+	configureGitIdentity(dir)
 	runAt(dir, "git", "remote", "add", "origin", "aws://"+bucket+"+"+table+"/"+prefix)
 
 	runAt(dir, "bash", "-c", "echo foo >> bar")
 	runAt(dir, "git", "add", ".")
 	runAt(dir, "git", "commit", "-m", "message")
+	first := runAtOut(dir, "git", "rev-parse", "HEAD")
 	runAt(dir, "git", "push", "-u", "origin", "master")
-	got := listKeys(bucket, prefix)
-	expected := []string{
-		"0000000000000000000000000000000000000000000000000000000000000000..f12ca64100fe68c55722f2ad619bfbde7e4e493dde3a7cb9eb65dbd43b7adf0a",
-	}
-	if !reflect.DeepEqual(got, expected) {
-		fmt.Println("got:", lib.PformatAlways(got))
-		fmt.Println("expected:", lib.PformatAlways(expected))
-		t.Fatal()
-	}
+	assertBundleKeys(t, bucket, prefix, []string{zeroHash256 + ".." + first})
 
 	runAt(dir, "bash", "-c", "echo foo >> bar")
 	runAt(dir, "git", "add", ".")
 	runAt(dir, "git", "commit", "-m", "message")
+	second := runAtOut(dir, "git", "rev-parse", "HEAD")
 	runAt(dir, "git", "push", "-u", "origin", "master")
-	got = listKeys(bucket, prefix)
-	expected = []string{
-		"0000000000000000000000000000000000000000000000000000000000000000..f12ca64100fe68c55722f2ad619bfbde7e4e493dde3a7cb9eb65dbd43b7adf0a",
-		"f12ca64100fe68c55722f2ad619bfbde7e4e493dde3a7cb9eb65dbd43b7adf0a..4aa82686ab76e2efc9f8df2c7e857b50363981a74222204073f0d9b1a81c29e3",
-	}
-	if !reflect.DeepEqual(got, expected) {
-		fmt.Println("got:", lib.PformatAlways(got))
-		fmt.Println("expected:", lib.PformatAlways(expected))
-		t.Fatal()
-	}
+	assertBundleKeys(t, bucket, prefix, []string{
+		zeroHash256 + ".." + first,
+		first + ".." + second,
+	})
 
 	dir2, cleanup2 := newTempdir()
 	defer cleanup2()
 	runAt(dir2, "git", "clone", "aws://"+bucket+"+"+table+"/"+prefix)
-	got = strings.Split(runAtOut(dir2+"/"+prefix, "git", "log", "--format=%H"), "\n")
-	expected = []string{
-		"4aa82686ab76e2efc9f8df2c7e857b50363981a74222204073f0d9b1a81c29e3",
-		"f12ca64100fe68c55722f2ad619bfbde7e4e493dde3a7cb9eb65dbd43b7adf0a",
-	}
-	if !reflect.DeepEqual(got, expected) {
-		fmt.Println("got:", lib.PformatAlways(got))
-		fmt.Println("expected:", lib.PformatAlways(expected))
-		t.Fatal()
-	}
+	assertLog(t, dir2+"/"+prefix, []string{second, first})
 }
 
 func TestPushBeforePullShouldFailSha256(t *testing.T) {
@@ -339,87 +474,108 @@ func TestPushBeforePullShouldFailSha256(t *testing.T) {
 	runAt(dir, "bash", "-c", "echo "+publicKey+" > .publickeys")
 	runAt(dir, "git", "init", "--object-format=sha256")
 	runAt(dir, "git", "config", "commit.gpgsign", "false")
+	configureGitIdentity(dir)
 	runAt(dir, "git", "remote", "add", "origin", "aws://"+bucket+"+"+table+"/"+prefix)
 
 	runAt(dir, "bash", "-c", "echo foo >> bar")
 	runAt(dir, "git", "add", ".")
 	runAt(dir, "git", "commit", "-m", "message")
+	first := runAtOut(dir, "git", "rev-parse", "HEAD")
 	runAt(dir, "git", "push", "-u", "origin", "master")
-	got := listKeys(bucket, prefix)
-	expected := []string{
-		"0000000000000000000000000000000000000000000000000000000000000000..f12ca64100fe68c55722f2ad619bfbde7e4e493dde3a7cb9eb65dbd43b7adf0a",
-	}
-	if !reflect.DeepEqual(got, expected) {
-		fmt.Println("got:", lib.PformatAlways(got))
-		fmt.Println("expected:", lib.PformatAlways(expected))
-		t.Fatal()
-	}
+	assertBundleKeys(t, bucket, prefix, []string{zeroHash256 + ".." + first})
 
 	runAt(dir, "bash", "-c", "echo foo >> bar")
 	runAt(dir, "git", "add", ".")
 	runAt(dir, "git", "commit", "-m", "message")
+	second := runAtOut(dir, "git", "rev-parse", "HEAD")
 	runAt(dir, "git", "push", "-u", "origin", "master")
-	got = listKeys(bucket, prefix)
-	expected = []string{
-		"0000000000000000000000000000000000000000000000000000000000000000..f12ca64100fe68c55722f2ad619bfbde7e4e493dde3a7cb9eb65dbd43b7adf0a",
-		"f12ca64100fe68c55722f2ad619bfbde7e4e493dde3a7cb9eb65dbd43b7adf0a..4aa82686ab76e2efc9f8df2c7e857b50363981a74222204073f0d9b1a81c29e3",
-	}
-	if !reflect.DeepEqual(got, expected) {
-		fmt.Println("got:", lib.PformatAlways(got))
-		fmt.Println("expected:", lib.PformatAlways(expected))
-		t.Fatal()
-	}
+	assertBundleKeys(t, bucket, prefix, []string{
+		zeroHash256 + ".." + first,
+		first + ".." + second,
+	})
 
 	dir2, cleanup2 := newTempdir()
 	defer cleanup2()
 	runAt(dir2, "git", "clone", "aws://"+bucket+"+"+table+"/"+prefix)
 	dir2 = dir2 + "/" + prefix
 	runAt(dir2, "git", "config", "commit.gpgsign", "false")
-	got = strings.Split(runAtOut(dir2, "git", "log", "--format=%H"), "\n")
-	expected = []string{
-		"4aa82686ab76e2efc9f8df2c7e857b50363981a74222204073f0d9b1a81c29e3",
-		"f12ca64100fe68c55722f2ad619bfbde7e4e493dde3a7cb9eb65dbd43b7adf0a",
-	}
-	if !reflect.DeepEqual(got, expected) {
-		fmt.Println("got:", lib.PformatAlways(got))
-		fmt.Println("expected:", lib.PformatAlways(expected))
-		t.Fatal()
-	}
+	configureGitIdentity(dir2)
+	assertLog(t, dir2, []string{second, first})
 
 	runAt(dir2, "bash", "-c", "echo foo >> bar")
 	runAt(dir2, "git", "add", ".")
 	runAt(dir2, "git", "commit", "-m", "message")
+	third := runAtOut(dir2, "git", "rev-parse", "HEAD")
 	runAt(dir2, "git", "push", "-u", "origin", "master")
-	got = listKeys(bucket, prefix)
-	expected = []string{
-		"0000000000000000000000000000000000000000000000000000000000000000..f12ca64100fe68c55722f2ad619bfbde7e4e493dde3a7cb9eb65dbd43b7adf0a",
-		"4aa82686ab76e2efc9f8df2c7e857b50363981a74222204073f0d9b1a81c29e3..2d71f3e7501db5c58d5925ff8ba8013601c46a320a8e917ffa8de7312c3a1c68",
-		"f12ca64100fe68c55722f2ad619bfbde7e4e493dde3a7cb9eb65dbd43b7adf0a..4aa82686ab76e2efc9f8df2c7e857b50363981a74222204073f0d9b1a81c29e3",
-	}
-	if !reflect.DeepEqual(got, expected) {
-		fmt.Println("got:", lib.PformatAlways(got))
-		fmt.Println("expected:", lib.PformatAlways(expected))
-		t.Fatal()
-	}
+	assertBundleKeys(t, bucket, prefix, []string{
+		zeroHash256 + ".." + first,
+		first + ".." + second,
+		second + ".." + third,
+	})
 
 	runAt(dir, "bash", "-c", "echo should fail >> bar")
 	runAt(dir, "git", "add", ".")
 	runAt(dir, "git", "commit", "-m", "message")
-	if runAtErr(dir, "git", "push", "-u", "origin", "master") == nil {
-		t.Fatal("should have failed because need to pull before push")
-	}
+	assertRunAtErrContains(t, dir, "remote has new commits, pull before pushing", "git", "push", "-u", "origin", "master")
 }
 
 func TestEncryption(_ *testing.T) {
 	_, cleanupKeys := setupEphemeralKeys()
 	defer cleanupKeys()
+	binary := buildGitRemoteAws()
 
 	dir, cleanup := newTempdir()
 	defer cleanup()
-	runAt(dir, "bash", "-c", "echo hello | git-remote-aws -e > ciphertext")
+	runAt(dir, "bash", "-c", "echo hello | "+binary+" -e > ciphertext")
 	runAt(dir, "bash", "-c", "[ \"$(cat ciphertext)\" != \"hello\" ]")
-	runAt(dir, "bash", "-c", "cat ciphertext | git-remote-aws -d > plaintext")
+	runAt(dir, "bash", "-c", "cat ciphertext | "+binary+" -d > plaintext")
 	runAt(dir, "bash", "-c", "[ \"$(cat plaintext)\" = \"hello\" ]")
+}
+
+func TestFirstPushTagIsBanned(t *testing.T) {
+	dir, cleanup := newTempdir()
+	defer cleanup()
+	table, bucket, prefix := getTestBucketAndTable()
+	defer cleanupAws(table, bucket, prefix)
+
+	publicKey, cleanupKeys := setupEphemeralKeys()
+	defer cleanupKeys()
+
+	runAt(dir, "bash", "-c", "echo "+publicKey+" > .publickeys")
+	runAt(dir, "git", "init")
+	runAt(dir, "git", "config", "commit.gpgsign", "false")
+	configureGitIdentity(dir)
+	runAt(dir, "git", "remote", "add", "origin", "aws://"+bucket+"+"+table+"/"+prefix)
+
+	runAt(dir, "bash", "-c", "echo foo > bar")
+	runAt(dir, "git", "add", ".")
+	runAt(dir, "git", "commit", "-m", "initial commit")
+	runAt(dir, "git", "tag", "v1")
+
+	assertRunAtErrContains(t, dir, "ref is not a branch", "git", "push", "origin", "v1")
+}
+
+func TestFirstPushBranchWithSlashIsBanned(t *testing.T) {
+	dir, cleanup := newTempdir()
+	defer cleanup()
+	table, bucket, prefix := getTestBucketAndTable()
+	defer cleanupAws(table, bucket, prefix)
+
+	publicKey, cleanupKeys := setupEphemeralKeys()
+	defer cleanupKeys()
+
+	runAt(dir, "bash", "-c", "echo "+publicKey+" > .publickeys")
+	runAt(dir, "git", "init")
+	runAt(dir, "git", "config", "commit.gpgsign", "false")
+	configureGitIdentity(dir)
+	runAt(dir, "git", "remote", "add", "origin", "aws://"+bucket+"+"+table+"/"+prefix)
+
+	runAt(dir, "bash", "-c", "echo foo > bar")
+	runAt(dir, "git", "add", ".")
+	runAt(dir, "git", "commit", "-m", "initial commit")
+	runAt(dir, "git", "checkout", "-b", "feature/slash")
+
+	assertRunAtErrContains(t, dir, "branch names cannot be empty or contain slashes", "git", "push", "-u", "origin", "refs/heads/feature/slash:refs/heads/feature/slash")
 }
 
 func TestBranchesAndTagsAreBanned(t *testing.T) {
@@ -434,6 +590,7 @@ func TestBranchesAndTagsAreBanned(t *testing.T) {
 	runAt(dir, "bash", "-c", "echo "+publicKey+" > .publickeys")
 	runAt(dir, "git", "init")
 	runAt(dir, "git", "config", "commit.gpgsign", "false")
+	configureGitIdentity(dir)
 	runAt(dir, "git", "remote", "add", "origin", "aws://"+bucket+"+"+table+"/"+prefix)
 
 	runAt(dir, "bash", "-c", "echo foo > bar")
@@ -445,14 +602,10 @@ func TestBranchesAndTagsAreBanned(t *testing.T) {
 	runAt(dir, "bash", "-c", "echo extra >> extra.txt")
 	runAt(dir, "git", "add", ".")
 	runAt(dir, "git", "commit", "-m", "second branch commit")
-	if runAtErr(dir, "git", "push", "origin", "other-branch") == nil {
-		t.Fatal("expected error when pushing an additional branch")
-	}
+	assertRunAtErrContains(t, dir, "local branch is different from remote branch", "git", "push", "origin", "other-branch")
 
 	runAt(dir, "git", "tag", "test-tag")
-	if runAtErr(dir, "git", "push", "origin", "test-tag") == nil {
-		t.Fatal("expected error when pushing a tag")
-	}
+	assertRunAtErrContains(t, dir, "ref is not a branch", "git", "push", "origin", "test-tag")
 }
 
 func TestMutatingHistoryIsBanned(t *testing.T) {
@@ -467,6 +620,7 @@ func TestMutatingHistoryIsBanned(t *testing.T) {
 	runAt(dir, "bash", "-c", "echo "+publicKey+" > .publickeys")
 	runAt(dir, "git", "init")
 	runAt(dir, "git", "config", "commit.gpgsign", "false")
+	configureGitIdentity(dir)
 	runAt(dir, "git", "remote", "add", "origin", "aws://"+bucket+"+"+table+"/"+prefix)
 
 	runAt(dir, "bash", "-c", "echo foo > bar")
@@ -484,9 +638,7 @@ func TestMutatingHistoryIsBanned(t *testing.T) {
 	runAt(dir, "git", "add", ".")
 	runAt(dir, "git", "commit", "-m", "C")
 
-	if runAtErr(dir, "git", "push", "-u", "origin", "master", "--force") == nil {
-		t.Fatal("expected error when force pushing")
-	}
+	assertRunAtErrContains(t, dir, "force push is not allowed", "git", "push", "-u", "origin", "master", "--force")
 }
 
 func TestPushWithoutPullShouldFail(t *testing.T) {
@@ -501,6 +653,7 @@ func TestPushWithoutPullShouldFail(t *testing.T) {
 	runAt(dir, "bash", "-c", "echo "+publicKey+" > .publickeys")
 	runAt(dir, "git", "init")
 	runAt(dir, "git", "config", "commit.gpgsign", "false")
+	configureGitIdentity(dir)
 	runAt(dir, "git", "remote", "add", "origin", "aws://"+bucket+"+"+table+"/"+prefix)
 
 	// first commit and push from dir
@@ -517,6 +670,7 @@ func TestPushWithoutPullShouldFail(t *testing.T) {
 	// commit and push from dir2
 	runAt(dir2+"/"+prefix, "bash", "-c", "echo second > file2.txt")
 	runAt(dir2+"/"+prefix, "git", "add", ".")
+	configureGitIdentity(dir2 + "/" + prefix)
 	runAt(dir2+"/"+prefix, "git", "commit", "-m", "commit 2")
 	runAt(dir2+"/"+prefix, "git", "push", "origin", "master")
 
@@ -526,7 +680,121 @@ func TestPushWithoutPullShouldFail(t *testing.T) {
 	runAt(dir, "git", "add", ".")
 	runAt(dir, "git", "commit", "-m", "commit 3")
 
-	if runAtErr(dir, "git", "push", "origin", "master") == nil {
-		t.Fatal("expected error when pushing without pulling the latest commit")
+	assertRunAtErrContains(t, dir, "remote has new commits, pull before pushing", "git", "push", "origin", "master")
+}
+
+func TestPushFailsWhenBundlesMetadataObjectIsMissing(t *testing.T) {
+	dir, cleanup := newTempdir()
+	defer cleanup()
+	table, bucket, prefix := getTestBucketAndTable()
+	defer cleanupAws(table, bucket, prefix)
+
+	publicKey, cleanupKeys := setupEphemeralKeys()
+	defer cleanupKeys()
+
+	runAt(dir, "bash", "-c", "echo "+publicKey+" > .publickeys")
+	runAt(dir, "git", "init")
+	runAt(dir, "git", "config", "commit.gpgsign", "false")
+	configureGitIdentity(dir)
+	runAt(dir, "git", "remote", "add", "origin", "aws://"+bucket+"+"+table+"/"+prefix)
+
+	runAt(dir, "bash", "-c", "echo first > file.txt")
+	runAt(dir, "git", "add", ".")
+	runAt(dir, "git", "commit", "-m", "commit 1")
+	first := runAtOut(dir, "git", "rev-parse", "HEAD")
+	runAt(dir, "git", "push", "-u", "origin", "master")
+
+	repoMeta := getRepoMeta(table, bucket, prefix)
+	if repoMeta.BundlesS3Key == "" {
+		t.Fatal("expected bundles metadata key after first push")
+	}
+	deleteObject(bucket, repoMeta.BundlesS3Key)
+
+	runAt(dir, "bash", "-c", "echo second > file2.txt")
+	runAt(dir, "git", "add", ".")
+	runAt(dir, "git", "commit", "-m", "commit 2")
+
+	assertRunAtErrContains(t, dir, "failed to get bundles metadata", "git", "push", "origin", "master")
+	assertBundleKeys(t, bucket, prefix, []string{zeroHash + ".." + first})
+}
+
+func TestPushFailsWhenBundlesMetadataObjectIsEmpty(t *testing.T) {
+	dir, cleanup := newTempdir()
+	defer cleanup()
+	table, bucket, prefix := getTestBucketAndTable()
+	defer cleanupAws(table, bucket, prefix)
+
+	publicKey, cleanupKeys := setupEphemeralKeys()
+	defer cleanupKeys()
+
+	runAt(dir, "bash", "-c", "echo "+publicKey+" > .publickeys")
+	runAt(dir, "git", "init")
+	runAt(dir, "git", "config", "commit.gpgsign", "false")
+	configureGitIdentity(dir)
+	runAt(dir, "git", "remote", "add", "origin", "aws://"+bucket+"+"+table+"/"+prefix)
+
+	runAt(dir, "bash", "-c", "echo first > file.txt")
+	runAt(dir, "git", "add", ".")
+	runAt(dir, "git", "commit", "-m", "commit 1")
+	first := runAtOut(dir, "git", "rev-parse", "HEAD")
+	runAt(dir, "git", "push", "-u", "origin", "master")
+
+	repoMeta := getRepoMeta(table, bucket, prefix)
+	if repoMeta.BundlesS3Key == "" {
+		t.Fatal("expected bundles metadata key after first push")
+	}
+	putObject(bucket, repoMeta.BundlesS3Key, "\n")
+
+	runAt(dir, "bash", "-c", "echo second > file2.txt")
+	runAt(dir, "git", "add", ".")
+	runAt(dir, "git", "commit", "-m", "commit 2")
+
+	assertRunAtErrContains(t, dir, "bundles metadata is empty", "git", "push", "origin", "master")
+	assertBundleKeys(t, bucket, prefix, []string{zeroHash + ".." + first})
+}
+
+func TestFetchFailsWhenBundleMetadataContainsPathTraversal(t *testing.T) {
+	dir, cleanup := newTempdir()
+	defer cleanup()
+	table, bucket, prefix := getTestBucketAndTable()
+	defer cleanupAws(table, bucket, prefix)
+
+	publicKey, cleanupKeys := setupEphemeralKeys()
+	defer cleanupKeys()
+
+	runAt(dir, "bash", "-c", "echo "+publicKey+" > .publickeys")
+	runAt(dir, "git", "init")
+	runAt(dir, "git", "config", "commit.gpgsign", "false")
+	configureGitIdentity(dir)
+	runAt(dir, "git", "remote", "add", "origin", "aws://"+bucket+"+"+table+"/"+prefix)
+
+	runAt(dir, "bash", "-c", "echo first > file.txt")
+	runAt(dir, "git", "add", ".")
+	runAt(dir, "git", "commit", "-m", "commit 1")
+	runAt(dir, "git", "push", "-u", "origin", "master")
+
+	repoMeta := getRepoMeta(table, bucket, prefix)
+	startHash := strings.ReplaceAll(newUuid(), "-", "") + "00000000"
+	endHash := strings.ReplaceAll(newUuid(), "-", "") + "11111111"
+	maliciousBase := startHash + ".." + endHash
+	maliciousBundle := "../" + maliciousBase
+	escapedPath := path.Join("/tmp", maliciousBase)
+	defer func() { _ = os.Remove(escapedPath) }()
+	defer func() { _ = os.Remove(escapedPath + ".decrypted") }()
+	if _, err := os.Stat(escapedPath); err == nil {
+		t.Fatalf("test escape path already exists: %s", escapedPath)
+	} else if !os.IsNotExist(err) {
+		panic(err)
+	}
+	putObject(bucket, repoMeta.BundlesS3Key, maliciousBundle)
+	putObject(bucket, prefix+"/"+maliciousBundle, "not an encrypted bundle")
+
+	dir2, cleanup2 := newTempdir()
+	defer cleanup2()
+	assertRunAtErrContains(t, dir2, "invalid bundle name", "git", "clone", "aws://"+bucket+"+"+table+"/"+prefix)
+	if _, err := os.Stat(escapedPath); err == nil {
+		t.Fatalf("bundle metadata path traversal wrote outside tempdir: %s", escapedPath)
+	} else if !os.IsNotExist(err) {
+		panic(err)
 	}
 }
