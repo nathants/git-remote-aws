@@ -1,143 +1,109 @@
 # Git-Remote-AWS
 
-## Why
+Encrypted Git hosting in S3, with DynamoDB compare-and-swap for concurrent pushes.
+Each remote has one branch; force pushes are forbidden. SHA-1 and SHA-256 Git
+repositories and existing encrypted histories remain readable.
 
-Encrypted Git hosting should be easy.
-
-## How
-
-Encrypted Git [bundles](https://git-scm.com/docs/git-bundle) are stored in S3.
-
-Compare and swap against DynamoDB updates an ordered list of bundles. This enables multiple writers to safely collaborate on a single remote.
-
-Each remote can hold one and only one branch.
-
-Bundles in S3 are immutable, and force push is not allowed.
-
-Bundles are encrypted with Libsodium [secretstream](https://doc.libsodium.org/secret-key_cryptography/secretstream). User keys are Libsodium box [keypairs](https://doc.libsodium.org/public-key_cryptography/authenticated_encryption#key-pair-generation). Authorized user public keys are added to a `.publickeys` file in the Git repository. To add or remove authorized users, update the `.publickeys` file, then create and push to a new remote or delete S3 data and recreate an existing remote.
-
-Metadata is stored unencrypted:
-- Branch name
-- Remote name
-- Git hash for the start and end of each bundle
-
-Data is stored encrypted:
-- Git bundles
-
-Both Git SHA1 and SHA256 hashing algorithms are supported.
-
-Private S3 buckets and DynamoDB tables are created ondemand if they do not already exist.
-
-## What
-
-A custom Git remote adding support for remotes like:
-
-`git remote add origin aws://${s3_bucket}+${dynamo_table}/${remote_name}`
-
-The Git remote binary provides a keygen for Libsodium box [keypairs](https://doc.libsodium.org/public-key_cryptography/authenticated_encryption#key-pair-generation):
-
-`git-remote-aws --keygen`
-
-This outputs export statements for `GIT_REMOTE_AWS_PUBLICKEY` and `GIT_REMOTE_AWS_SECRETKEY`. Add them to `~/.bashrc`.
-
-Alternatively, `GIT_REMOTE_AWS_SECRETKEY_CMD` can specify a command on PATH that outputs the secret key. It receives the remote URL as an argument.
+Git bundles use Libsodium secretstream encryption and box recipient keys. Branch
+names, remote names, and bundle boundary commit IDs are unencrypted. Encryption
+keys and AWS access credentials are separate.
 
 ## Install
 
-Install Go and Libsodium from your package manager:
+Requires Linux, Go 1.27+, and Libsodium (including development headers).
 
-```bash
-brew install         go     libsodium     # homebrew
-sudo pacman -S       go     libsodium     # arch
-sudo apk add         go     libsodium-dev # alpine
-sudo apt-get install golang libsodium-dev # ubuntu/debian
-```
-
-Install the binary and update PATH:
-
-```bash
+```sh
 go install github.com/nathants/git-remote-aws@latest
-
-export PATH=$PATH:$(go env GOPATH)/bin
+export PATH="$PATH:$(go env GOPATH)/bin"
 ```
+
+## Keys
+
+Create personal key files in a private directory:
+
+```sh
+mkdir -p -m 700 ~/.config/git-remote-aws
+git-remote-aws --keygen \
+  --public-key-file ~/.config/git-remote-aws/public \
+  --secret-key-file ~/.config/git-remote-aws/secret
+export GIT_REMOTE_AWS_SECRETKEY_FILE=~/.config/git-remote-aws/secret
+```
+
+Set exactly one nonempty secret source:
+
+- `GIT_REMOTE_AWS_SECRETKEY`: private key chain text.
+- `GIT_REMOTE_AWS_SECRETKEY_FILE`: private file, mode `0600` or `0400`.
+- `GIT_REMOTE_AWS_SECRETKEY_CMD`: executable that prints private chains; receives
+  the remote URL as its argument. Interactive loaders run in the foreground;
+  Ctrl-C cancels loading. No prompting deadline is imposed.
+
+Secrets load only for decryption. Without file flags, `--keygen` prints a fresh
+pair as export statements for manual secret-manager storage; keep that output private.
 
 ## Usage
 
-```bash
->> git-remote-aws --keygen
-export GIT_REMOTE_AWS_PUBLICKEY=...
-export GIT_REMOTE_AWS_SECRETKEY=...
-# add these to ~/.bashrc, then start a new shell
+Configure AWS credentials, then create a repository:
 
->> git init
-
->> git remote add origin aws://${bucket}+${table}/myrepo
-
->> echo $GIT_REMOTE_AWS_PUBLICKEY >> .publickeys
-
->> git add .
-
->> git commit -m init
-
->> git push -u origin master
-
-creating private s3 bucket: $bucket
-lib/s3.go:329: created bucket: $bucket
-lib/s3.go:367: created bucket tags for: $bucket
-lib/s3.go:415: created public access block for $bucket: private
-lib/s3.go:657: created encryption for $bucket: true
-lib/s3.go:688: put bucket metrics for: $bucket
-created private s3 bucket: $bucket
-creating private dynamodb table: $table
-lib/dynamodb.go:481: created table: $table
-lib/dynamodb.go:974: waiting for table active: $table
-lib/dynamodb.go:974: waiting for table active: $table
-created private dynamodb table: $table
-get dynamodb://$table/$bucket/myrepo
-get dynamodb://$table/$bucket/myrepo
-get s3://$bucket/
-git bundle: 0000000000000000000000000000000000000000..daf8ea23a2aa082a3eeffacbdda04917d14916cc
-put s3://$bucket/myrepo/0000000000000000000000000000000000000000..daf8ea23a2aa082a3eeffacbdda04917d14916cc
-put s3://$bucket/myrepo/bundles_daf8ea23a2aa082a3eeffacbdda04917d14916cc
-put dynamodb://$table/$bucket/myrepo
-To aws://$bucket+$table/myrepo
- * [new branch]      master -> master
-
->> libaws s3-ls $bucket/ -r
-
-770 myrepo/0000000000000000000000000000000000000000..daf8ea23a2aa082a3eeffacbdda04917d14916cc
- 82 myrepo/bundles_daf8ea23a2aa082a3eeffacbdda04917d14916cc
-
->> libaws dynamodb-item-scan $table | jq .
-
-{
-  "branch": "master",
-  "bundles": "myrepo/bundles_daf8ea23a2aa082a3eeffacbdda04917d14916cc",
-  "id": "$bucket/myrepo",
-  "uid": null,
-  "unix": 0
-}
-
->> cd $(mktemp -d)
-
->> git clone aws://${bucket}+${table}/myrepo
-
-Cloning into 'myrepo'...
-get dynamodb://$table/$bucket/myrepo
-get s3://$bucket/myrepo/bundles_daf8ea23a2aa082a3eeffacbdda04917d14916cc
-get dynamodb://$table/$bucket/myrepo
-get s3://$bucket/myrepo/bundles_daf8ea23a2aa082a3eeffacbdda04917d14916cc
-get s3://$bucket/myrepo/0000000000000000000000000000000000000000..daf8ea23a2aa082a3eeffacbdda04917d14916cc
-git unbundle: 0000000000000000000000000000000000000000..daf8ea23a2aa082a3eeffacbdda04917d14916cc
-get dynamodb://$table/$bucket/myrepo
-get s3://$bucket/myrepo/bundles_daf8ea23a2aa082a3eeffacbdda04917d14916cc
-
+```sh
+mkdir myrepo && cd myrepo
+git init -b main
+cat ~/.config/git-remote-aws/public > .publickeys
+git add .publickeys
+git commit -m 'Add recipients'
+git remote add origin aws://BUCKET+TABLE/REPOSITORY
+git push -u origin main
 ```
 
-General encryption and decryption usage:
+Use `ensure=y git push ...` to create a missing private bucket/table with suitable
+AWS permissions. Otherwise provision them beforehand. Clone and fetch work normally.
 
-```bash
->> echo hello | git-remote-aws --encrypt > ciphertext
+`.publickeys` contains one recipient per line, with rotations joined by colons:
+`old:new:newest`. New bundles use each recipient's newest key from the pushed
+commit. Commit recipient edits before pushing; staged or unstaged edits are rejected.
+Rows need not be sorted; blank lines and a missing final newline are allowed.
 
->> cat ciphertext | git-remote-aws --decrypt
+## Rotation
+
+Rerun the personal-file `--keygen` command above to extend both chains, then update
+that recipient's line in each repository's `.publickeys` and commit it. **Do not
+pass a repository's `.publickeys` to keygen.**
+
+Retain all private generations for historical decryption. Adding/removing recipients
+does not rewrite old ciphertext or revoke access to copies already obtained.
+Keygen saves the private extension first: if publication fails, preserve both files
+and reconcile their generations before retrying. Never discard an extra private key.
+
+See [recipient key chains](https://github.com/nathants/go-libsodium#recipient-key-chains)
+for format limits and loader details.
+
+## Standalone encryption
+
+```sh
+export GIT_REMOTE_AWS_PUBLICKEY="$(cat ~/.config/git-remote-aws/public)"
+echo hello | git-remote-aws --encrypt > ciphertext
+git-remote-aws --decrypt < ciphertext
 ```
+
+## Development
+
+Cloud-free checks (CLI/terminal tests require Python 3.8+):
+
+```sh
+bash bin/check.sh
+go test -run '^(TestKey|TestBundle|TestRef|TestEncryption)' ./...
+GOFLAGS=-race go test -run '^(TestKey|TestBundle|TestRef|TestEncryption)' ./...
+```
+
+AWS tests require credentials and `GIT_REMOTE_AWS_TEST_{ACCOUNT,BUCKET,TABLE}`.
+Use a disposable unversioned S3 bucket and DynamoDB table with string partition
+key `id`, never production resources. Tests clean their objects/items; remove the
+bucket/table afterward.
+
+```sh
+go test ./...
+GOFLAGS=-race go test ./...
+```
+
+For historical compatibility tests, set `GIT_REMOTE_AWS_TEST_OLD_BINARY` to a
+pre-keychain helper built with go-libsodium `v0.0.0-20260502104057-4e1a79aae4f3`.
+Without that artifact, those tests are skipped.

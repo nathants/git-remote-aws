@@ -63,29 +63,19 @@ func mustPanicContains(t *testing.T, expected string, f func()) {
 	f()
 }
 
-func setupEphemeralKeys() (publicKeyHex string, cleanup func()) {
+func setupEphemeralKeys(t *testing.T) string {
+	t.Helper()
 	libsodium.Init()
 	pk, sk, err := libsodium.BoxKeypair()
 	if err != nil {
-		panic(err)
+		t.Fatal(err)
 	}
-	publicKeyHex = hex.EncodeToString(pk)
-	secretKeyHex := hex.EncodeToString(sk)
-	oldPub := os.Getenv("GIT_REMOTE_AWS_PUBLICKEY")
-	oldSec := os.Getenv("GIT_REMOTE_AWS_SECRETKEY")
-	err = os.Setenv("GIT_REMOTE_AWS_PUBLICKEY", publicKeyHex)
-	if err != nil {
-		panic(err)
-	}
-	err = os.Setenv("GIT_REMOTE_AWS_SECRETKEY", secretKeyHex)
-	if err != nil {
-		panic(err)
-	}
-	cleanup = func() {
-		_ = os.Setenv("GIT_REMOTE_AWS_PUBLICKEY", oldPub)
-		_ = os.Setenv("GIT_REMOTE_AWS_SECRETKEY", oldSec)
-	}
-	return publicKeyHex, cleanup
+	public := hex.EncodeToString(pk)
+	t.Setenv("GIT_REMOTE_AWS_PUBLICKEY", public)
+	t.Setenv("GIT_REMOTE_AWS_SECRETKEY", hex.EncodeToString(sk))
+	t.Setenv("GIT_REMOTE_AWS_SECRETKEY_FILE", "")
+	t.Setenv("GIT_REMOTE_AWS_SECRETKEY_CMD", "")
+	return public
 }
 
 func runAt(dir string, args ...string) {
@@ -156,6 +146,8 @@ func ensureGitRemoteAwsOnPath(binary string) {
 }
 
 func configureGitIdentity(dir string) {
+	runAt(dir, "git", "config", "commit.gpgsign", "false")
+	runAt(dir, "git", "config", "core.hooksPath", "/dev/null")
 	runAt(dir, "git", "config", "user.name", "git-remote-aws test")
 	runAt(dir, "git", "config", "user.email", "git-remote-aws-test@example.com")
 }
@@ -390,8 +382,7 @@ func TestBasic(t *testing.T) {
 	table, bucket, prefix := getTestBucketAndTable()
 	defer cleanupAws(table, bucket, prefix)
 
-	publicKey, cleanupKeys := setupEphemeralKeys()
-	defer cleanupKeys()
+	publicKey := setupEphemeralKeys(t)
 
 	runAt(dir, "bash", "-c", "echo "+publicKey+" > .publickeys")
 	runAt(dir, "git", "init")
@@ -429,8 +420,7 @@ func TestBasicSha256(t *testing.T) {
 	table, bucket, prefix := getTestBucketAndTable()
 	defer cleanupAws(table, bucket, prefix)
 
-	publicKey, cleanupKeys := setupEphemeralKeys()
-	defer cleanupKeys()
+	publicKey := setupEphemeralKeys(t)
 
 	runAt(dir, "bash", "-c", "echo "+publicKey+" > .publickeys")
 	runAt(dir, "git", "init", "--object-format=sha256")
@@ -468,8 +458,7 @@ func TestPushBeforePullShouldFailSha256(t *testing.T) {
 	table, bucket, prefix := getTestBucketAndTable()
 	defer cleanupAws(table, bucket, prefix)
 
-	publicKey, cleanupKeys := setupEphemeralKeys()
-	defer cleanupKeys()
+	publicKey := setupEphemeralKeys(t)
 
 	runAt(dir, "bash", "-c", "echo "+publicKey+" > .publickeys")
 	runAt(dir, "git", "init", "--object-format=sha256")
@@ -519,9 +508,8 @@ func TestPushBeforePullShouldFailSha256(t *testing.T) {
 	assertRunAtErrContains(t, dir, "remote has new commits, pull before pushing", "git", "push", "-u", "origin", "master")
 }
 
-func TestEncryption(_ *testing.T) {
-	_, cleanupKeys := setupEphemeralKeys()
-	defer cleanupKeys()
+func TestEncryption(t *testing.T) {
+	setupEphemeralKeys(t)
 	binary := buildGitRemoteAws()
 
 	dir, cleanup := newTempdir()
@@ -538,8 +526,7 @@ func TestFirstPushTagIsBanned(t *testing.T) {
 	table, bucket, prefix := getTestBucketAndTable()
 	defer cleanupAws(table, bucket, prefix)
 
-	publicKey, cleanupKeys := setupEphemeralKeys()
-	defer cleanupKeys()
+	publicKey := setupEphemeralKeys(t)
 
 	runAt(dir, "bash", "-c", "echo "+publicKey+" > .publickeys")
 	runAt(dir, "git", "init")
@@ -561,8 +548,7 @@ func TestFirstPushBranchWithSlashIsBanned(t *testing.T) {
 	table, bucket, prefix := getTestBucketAndTable()
 	defer cleanupAws(table, bucket, prefix)
 
-	publicKey, cleanupKeys := setupEphemeralKeys()
-	defer cleanupKeys()
+	publicKey := setupEphemeralKeys(t)
 
 	runAt(dir, "bash", "-c", "echo "+publicKey+" > .publickeys")
 	runAt(dir, "git", "init")
@@ -584,8 +570,7 @@ func TestBranchesAndTagsAreBanned(t *testing.T) {
 	table, bucket, prefix := getTestBucketAndTable()
 	defer cleanupAws(table, bucket, prefix)
 
-	publicKey, cleanupKeys := setupEphemeralKeys()
-	defer cleanupKeys()
+	publicKey := setupEphemeralKeys(t)
 
 	runAt(dir, "bash", "-c", "echo "+publicKey+" > .publickeys")
 	runAt(dir, "git", "init")
@@ -614,8 +599,7 @@ func TestMutatingHistoryIsBanned(t *testing.T) {
 	table, bucket, prefix := getTestBucketAndTable()
 	defer cleanupAws(table, bucket, prefix)
 
-	publicKey, cleanupKeys := setupEphemeralKeys()
-	defer cleanupKeys()
+	publicKey := setupEphemeralKeys(t)
 
 	runAt(dir, "bash", "-c", "echo "+publicKey+" > .publickeys")
 	runAt(dir, "git", "init")
@@ -647,8 +631,7 @@ func TestPushWithoutPullShouldFail(t *testing.T) {
 	table, bucket, prefix := getTestBucketAndTable()
 	defer cleanupAws(table, bucket, prefix)
 
-	publicKey, cleanupKeys := setupEphemeralKeys()
-	defer cleanupKeys()
+	publicKey := setupEphemeralKeys(t)
 
 	runAt(dir, "bash", "-c", "echo "+publicKey+" > .publickeys")
 	runAt(dir, "git", "init")
@@ -689,8 +672,7 @@ func TestPushFailsWhenBundlesMetadataObjectIsMissing(t *testing.T) {
 	table, bucket, prefix := getTestBucketAndTable()
 	defer cleanupAws(table, bucket, prefix)
 
-	publicKey, cleanupKeys := setupEphemeralKeys()
-	defer cleanupKeys()
+	publicKey := setupEphemeralKeys(t)
 
 	runAt(dir, "bash", "-c", "echo "+publicKey+" > .publickeys")
 	runAt(dir, "git", "init")
@@ -724,8 +706,7 @@ func TestPushFailsWhenBundlesMetadataObjectIsEmpty(t *testing.T) {
 	table, bucket, prefix := getTestBucketAndTable()
 	defer cleanupAws(table, bucket, prefix)
 
-	publicKey, cleanupKeys := setupEphemeralKeys()
-	defer cleanupKeys()
+	publicKey := setupEphemeralKeys(t)
 
 	runAt(dir, "bash", "-c", "echo "+publicKey+" > .publickeys")
 	runAt(dir, "git", "init")
@@ -759,8 +740,7 @@ func TestFetchFailsWhenBundleMetadataContainsPathTraversal(t *testing.T) {
 	table, bucket, prefix := getTestBucketAndTable()
 	defer cleanupAws(table, bucket, prefix)
 
-	publicKey, cleanupKeys := setupEphemeralKeys()
-	defer cleanupKeys()
+	publicKey := setupEphemeralKeys(t)
 
 	runAt(dir, "bash", "-c", "echo "+publicKey+" > .publickeys")
 	runAt(dir, "git", "init")

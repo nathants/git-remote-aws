@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -19,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/nathants/go-dynamolock"
 	"github.com/nathants/go-libsodium"
+	"github.com/nathants/go-libsodium/keysource"
 	"github.com/nathants/libaws/lib"
 )
 
@@ -189,7 +189,7 @@ func push(table, bucket, prefix, command string) {
 
 	// find latest local hash
 	var stdout bytes.Buffer
-	cmd := exec.Command("git", "log", "--format=%H", "-1", branch)
+	cmd := exec.Command("git", "log", "--format=%H", "-1", localRef)
 	cmd.Stdout = &stdout
 	err = cmd.Run()
 	if err != nil {
@@ -197,19 +197,27 @@ func push(table, bucket, prefix, command string) {
 	}
 	hash := strings.Trim(stdout.String(), "\n")
 
-	// if remote has data and latest hash equals local hash, there is nothing to push
-	if len(bundles) > 0 && hashEnd(last(bundles)) == hash {
-		fmt.Println()
-		return
-	}
-
-	// if remote has data and latest hash is unknown locally, we need to pull before pushing
+	// Check ancestry against the selected commit, not a branch that may move.
 	if len(bundles) > 0 {
 		hashRemote := hashEnd(last(bundles))
-		contains, _ := gitBranchContains(branch, hashRemote)
+		contains, _ := gitBranchContains(hash, hashRemote)
 		if !contains {
 			panic("remote has new commits, pull before pushing")
 		}
+	}
+
+	base := ""
+	if len(bundles) > 0 {
+		base = hashEnd(last(bundles))
+	}
+	recipients, err := pushRecipients(base, hash)
+	if err != nil {
+		panic(err)
+	}
+	// A no-op push must not conceal uncommitted recipient changes either.
+	if base == hash {
+		fmt.Println()
+		return
 	}
 
 	// create tempdir and defer cleanup
@@ -222,13 +230,13 @@ func push(table, bucket, prefix, command string) {
 	// setup bundle name and bundle target. a new remote bundles all
 	// commits. an existing remote bundles all commits since the last
 	// bundle in remote.
-	bundleTarget := branch
+	bundleTarget := localRef
 	bundleName := zeroHash + ".." + hash
 	if len(hash) == 64 {
 		bundleName = zeroHash256 + ".." + hash
 	}
 	if len(bundles) > 0 {
-		bundleTarget = hashEnd(last(bundles)) + ".." + branch
+		bundleTarget = hashEnd(last(bundles)) + ".." + localRef
 		bundleName = hashEnd(last(bundles)) + ".." + hash
 	} else {
 		cmd := exec.Command("git", "log", "--format=\"%H%d\"", hash)
@@ -246,15 +254,7 @@ func push(table, bucket, prefix, command string) {
 	// create bundle
 	bundleFile := tempdir + "/" + bundleName
 	fmt.Fprintln(os.Stderr, "git bundle:", path.Base(bundleFile))
-	cmd = exec.Command("git", "bundle", "create", bundleFile, bundleTarget)
-	var bundleStdout bytes.Buffer
-	var bundleStderr bytes.Buffer
-	cmd.Stderr = &bundleStderr
-	cmd.Stdout = &bundleStdout
-	err = cmd.Run()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, bundleStderr.String())
-		fmt.Fprintln(os.Stderr, bundleStdout.String())
+	if err := createPushBundle(bundleFile, bundleTarget, hash); err != nil {
 		panic(err)
 	}
 
@@ -268,7 +268,7 @@ func push(table, bucket, prefix, command string) {
 	if err != nil {
 		panic(err)
 	}
-	err = libsodium.StreamEncryptRecipients(publicKeys(), r, w)
+	err = libsodium.StreamEncryptRecipients(recipients, r, w)
 	if err != nil {
 		panic(err)
 	}
@@ -334,52 +334,24 @@ func push(table, bucket, prefix, command string) {
 	fmt.Println("")
 }
 
-func secretKey(remotePath string) []byte {
-	// Check for direct key in env var
-	env := os.Getenv("GIT_REMOTE_AWS_SECRETKEY")
-	if env != "" {
-		secretKey, err := hex.DecodeString(strings.TrimSpace(env))
-		if err != nil {
-			panic(fmt.Errorf("GIT_REMOTE_AWS_SECRETKEY is not valid hex: %w", err))
-		}
-		return secretKey
+func secretKey(remotePath string) *libsodium.Keyring {
+	ring, err := keysource.Load(context.Background(), remotePath)
+	if err != nil {
+		panic(err)
 	}
-	// Check for command to fetch key
-	cmdEnv := os.Getenv("GIT_REMOTE_AWS_SECRETKEY_CMD")
-	if cmdEnv != "" {
-		var cmd *exec.Cmd
-		if remotePath != "" {
-			cmd = exec.Command(cmdEnv, remotePath)
-		} else {
-			cmd = exec.Command(cmdEnv)
-		}
-		var stdout bytes.Buffer
-		var stderr bytes.Buffer
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-		err := cmd.Run()
-		if err != nil {
-			panic(fmt.Errorf("GIT_REMOTE_AWS_SECRETKEY_CMD failed: %w: %s", err, stderr.String()))
-		}
-		secretKey, err := hex.DecodeString(strings.TrimSpace(stdout.String()))
-		if err != nil {
-			panic(fmt.Errorf("GIT_REMOTE_AWS_SECRETKEY_CMD output is not valid hex: %w", err))
-		}
-		return secretKey
-	}
-	panic("GIT_REMOTE_AWS_SECRETKEY or GIT_REMOTE_AWS_SECRETKEY_CMD must be set")
+	return ring
 }
 
 func publicKey() [][]byte {
-	env := os.Getenv("GIT_REMOTE_AWS_PUBLICKEY")
-	if env == "" {
-		panic("GIT_REMOTE_AWS_PUBLICKEY must be set")
-	}
-	publicKey, err := hex.DecodeString(strings.TrimSpace(env))
+	chains, err := libsodium.ParseKeyChains(strings.NewReader(os.Getenv("GIT_REMOTE_AWS_PUBLICKEY")))
 	if err != nil {
-		panic(fmt.Errorf("GIT_REMOTE_AWS_PUBLICKEY is not valid hex: %w", err))
+		panic(err)
 	}
-	return [][]byte{publicKey}
+	keys, err := chains.Latest()
+	if err != nil {
+		panic(err)
+	}
+	return keys
 }
 
 // git helper fetch
@@ -437,6 +409,7 @@ func fetch(table, bucket, prefix, remotePath, command string) {
 	defer func() { _ = os.RemoveAll(tempdir) }()
 
 	// fetch remote bundles and unpack them
+	var ring *libsodium.Keyring
 	for _, bundle := range bundlesToFetch {
 
 		// fetch object
@@ -478,7 +451,10 @@ func fetch(table, bucket, prefix, remotePath, command string) {
 			_ = r.Close()
 			panic(err)
 		}
-		err = libsodium.StreamDecryptRecipients(secretKey(remotePath), r, w)
+		if ring == nil {
+			ring = secretKey(remotePath)
+		}
+		err = ring.Decrypt(r, w)
 		closeReadErr := r.Close()
 		closeWriteErr := w.Close()
 		if err != nil {
@@ -606,7 +582,7 @@ func gitHelper() {
 	ensure := os.Getenv("ensure") == "y"
 
 	// create bucket if needed
-	_, err = lib.S3BucketRegion(bucket)
+	_, err = lib.S3BucketRegion(context.Background(), bucket)
 	if err != nil {
 		if !ensure {
 			fmt.Fprintln(os.Stderr, "fatal: bucket did not exist and ensure=y env var not provided:", bucket)
@@ -667,6 +643,13 @@ func gitHelper() {
 		if command == "capabilities" {
 			capabilities()
 		} else if command == "list for-push" || command == "list" {
+			// Git may decide the remote is up to date without issuing push.
+			// Read-only discovery must remain available with local edits.
+			if command == "list for-push" {
+				if err := requireCommittedRecipients("HEAD"); err != nil {
+					panic(err)
+				}
+			}
 			list(table, bucket, prefix)
 		} else if strings.HasPrefix(command, "push ") {
 			push(table, bucket, prefix, command)
@@ -693,29 +676,64 @@ func usage() {
 	os.Exit(1)
 }
 
-func publicKeys() [][]byte {
-	data, err := os.ReadFile(".publickeys")
+// Read the exact published recipient policy, never an uncommitted worktree edit.
+func recipientChainsAt(commit string) (libsodium.KeyChains, error) {
+	tree, err := exec.Command("git", "ls-tree", "--full-tree", commit, "--", ".publickeys").Output()
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("inspect committed .publickeys: %w", err)
 	}
-	var publicKeys [][]byte
-	for _, line := range bytes.Split(data, []byte("\n")) {
-		if len(line) > 0 {
-			line, err := hex.DecodeString(string(line))
-			if err != nil {
-				panic(err)
-			}
-			pk, _, err := libsodium.BoxKeypair()
-			if err != nil {
-				panic(err)
-			}
-			if len(line) != len(pk) {
-				panic(fmt.Sprintf("malformed .publickeys file: %d != %d", len(line), len(pk)))
-			}
-			publicKeys = append(publicKeys, line)
+	if len(tree) == 0 {
+		// Old helper versions could encrypt from an untracked file. Absence is
+		// not a prior policy to validate; the new tip must still supply one.
+		return nil, nil
+	}
+	fields := strings.Fields(string(tree))
+	if len(fields) != 4 || fields[1] != "blob" || fields[3] != ".publickeys" || (fields[0] != "100644" && fields[0] != "100755") {
+		return nil, fmt.Errorf("committed .publickeys must be a regular file")
+	}
+	cmd := exec.Command("git", "cat-file", "blob", fields[2])
+	reader, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	chains, parseErr := libsodium.ParseKeyChains(reader)
+	if parseErr != nil {
+		_ = cmd.Process.Kill()
+	}
+	waitErr := cmd.Wait()
+	if parseErr != nil {
+		return nil, parseErr
+	}
+	if waitErr != nil {
+		return nil, fmt.Errorf("read committed .publickeys: %w", waitErr)
+	}
+	if len(chains) == 0 {
+		return nil, fmt.Errorf("committed .publickeys is empty")
+	}
+	return chains, nil
+}
+
+func pushRecipients(base, tip string) ([][]byte, error) {
+	if err := requireCommittedRecipients(tip); err != nil {
+		return nil, err
+	}
+	next, err := recipientChainsAt(tip)
+	if err != nil {
+		return nil, err
+	}
+	if base != "" {
+		old, err := recipientChainsAt(base)
+		if err != nil {
+			return nil, err
+		}
+		if err := libsodium.ValidateKeyChainTransition(old, next); err != nil {
+			return nil, err
 		}
 	}
-	return publicKeys
+	return next.Latest()
 }
 
 func encrypt() {
@@ -726,14 +744,24 @@ func encrypt() {
 }
 
 func decrypt() {
-	err := libsodium.StreamDecryptRecipients(secretKey(""), os.Stdin, os.Stdout)
+	err := secretKey("").Decrypt(os.Stdin, os.Stdout)
 	if err != nil {
 		panic(err)
 	}
 }
 
 func main() {
+	// Keep errors concise and never emit stack frames containing key material.
+	defer func() {
+		if value := recover(); value != nil {
+			fmt.Fprintf(os.Stderr, "git-remote-aws: %s\n", value)
+			os.Exit(1)
+		}
+	}()
 	libsodium.Init()
+	if len(os.Args) < 2 {
+		usage()
+	}
 	switch os.Args[1] {
 	case "-h", "--help":
 		usage()
@@ -742,12 +770,9 @@ func main() {
 	case "-d", "--decrypt":
 		decrypt()
 	case "-k", "--keygen":
-		pk, sk, err := libsodium.BoxKeypair()
-		if err != nil {
+		if err := keygen(os.Args[2:], os.Stdout); err != nil {
 			panic(err)
 		}
-		fmt.Printf("export GIT_REMOTE_AWS_PUBLICKEY=%s\n", hex.EncodeToString(pk))
-		fmt.Printf("export GIT_REMOTE_AWS_SECRETKEY=%s\n", hex.EncodeToString(sk))
 	default:
 		gitHelper()
 	}

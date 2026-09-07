@@ -27,22 +27,22 @@ echo nargs
 nargs ./...
 
 echo bodyclose
-go vet -vettool=$(which bodyclose) main.go
+go vet -vettool=$(which bodyclose) ./...
 
 echo go lint
 golint ./... | grep -v -e unexported -e "should be" || true
 
 echo static check
-staticcheck main.go
+staticcheck ./...
 
 echo ineffassign
-ineffassign main.go
+ineffassign ./...
 
 echo errcheck
-errcheck main.go
+errcheck ./...
 
 echo go vet
-go vet main.go
+go vet ./...
 
 echo go build
-go build -o /dev/null main.go
+go build -o /dev/null .
