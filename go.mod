@@ -6,7 +6,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.43.6
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.63.3
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.107.2
-	github.com/gofrs/uuid/v5 v5.4.0
+	github.com/gofrs/uuid/v5 v5.5.1
 	github.com/nathants/go-dynamolock v0.0.0-20260829060622-e276e75028fc
 	github.com/nathants/go-libsodium v0.0.0-20260907150908-165cd76c0d68
 	github.com/nathants/libaws v0.0.0-20260907082537-f80c2611a933
