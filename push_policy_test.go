@@ -35,7 +35,7 @@ func TestKeyPolicyRejectsUncommittedChanges(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "no-index":
-				// Backup writes validated commit trees without using Git's index.
+				// Commits created through Git plumbing need not have an index.
 				if err := os.Remove(filepath.Join(".git", "index")); err != nil {
 					t.Fatal(err)
 				}

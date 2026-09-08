@@ -22,7 +22,7 @@ func requireCommittedRecipients(tip string) error {
 	if err != nil {
 		return fmt.Errorf("locate .publickeys index: %w", err)
 	}
-	// Direct commit-tree callers such as backup need not create an index.
+	// Callers using git commit-tree need not create an index.
 	// An existing index, including an explicitly staged deletion, must agree.
 	if _, err := os.Lstat(strings.TrimSuffix(string(index), "\n")); err == nil {
 		// An ordinary literal filename also works when our caller pins

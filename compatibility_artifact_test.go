@@ -54,15 +54,15 @@ func prepareOldHelper(binary, directory string) (string, error) {
 	if !oldDependency {
 		return "", fmt.Errorf("old helper must use the independently pinned pre-keychain dependency")
 	}
-	// Git resolves a fixed executable name. Select this exact validated artifact,
-	// even if Admin gave it a different filename; never fall through to new PATH.
+	// Git resolves a fixed executable name. Select this exact validated artifact
+	// regardless of its filename; never fall through to another helper on PATH.
 	if err := os.Symlink(absolute, filepath.Join(directory, "git-remote-aws")); err != nil {
 		return "", err
 	}
 	return directory, nil
 }
 
-// The checked-in release runner uses this preflight before creating AWS resources.
+// Validate the selected artifact independently of tests that require AWS resources.
 func TestKeyCompatibilitySelectedArtifact(t *testing.T) {
 	binary := os.Getenv("GIT_REMOTE_AWS_TEST_OLD_BINARY")
 	if binary == "" {
