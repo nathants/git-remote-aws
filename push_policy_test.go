@@ -61,7 +61,7 @@ func TestKeyPolicyRejectsUncommittedChanges(t *testing.T) {
 					write(original)
 				}
 			}
-			_, err := pushRecipients(tip, tip)
+			_, err := pushRecipients(t.Context(), tip, tip)
 			if change == "unrelated" || change == "no-index" || change == "group-executable" {
 				if err != nil {
 					t.Fatal(err)
@@ -96,7 +96,7 @@ func TestKeyPolicyAllowsOldSingleLineFormatting(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Chdir(filepath.Join(dir, "subdir"))
-	if _, err := pushRecipients(base, tip); err != nil {
+	if _, err := pushRecipients(t.Context(), base, tip); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -172,7 +172,7 @@ func TestKeyPolicyAdoptsAbsentHistoricalFileOnly(t *testing.T) {
 			runAt(dir, "git", "add", ".")
 			runAt(dir, "git", "commit", "-qm", "committed recipients")
 			tip := runAtOut(dir, "git", "rev-parse", "HEAD")
-			_, err := pushRecipients(base, tip)
+			_, err := pushRecipients(t.Context(), base, tip)
 			if (err == nil) != (prior == "absent") {
 				t.Fatalf("baseline %s: %v", prior, err)
 			}

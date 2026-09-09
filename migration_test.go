@@ -98,3 +98,69 @@ func TestDynamolockMigration(t *testing.T) {
 		t.Fatalf("committed record = %+v, %v; want %+v", actual, err, got)
 	}
 }
+
+// Submit the real migration update after a competing writer changes the item.
+// DynamoDB, not a local condition evaluator, must reject every stale preimage.
+func TestDynamolockMigrationRejectsStalePreimage(t *testing.T) {
+	table, bucket, prefix := getTestBucketAndTable(t)
+	defer cleanupAws(table, bucket, prefix)
+	client := lib.DynamoDBClient()
+	for _, scenario := range []string{"payload", "legacy-owner", "lease-owner", "deleted", "migrated"} {
+		t.Run(scenario, func(t *testing.T) {
+			before := migrationItem(t, oldMigrationJSON)
+			before["id"] = &types.AttributeValueMemberS{Value: bucket + "/" + prefix}
+			key := map[string]types.AttributeValue{"id": before["id"]}
+			if _, err := client.PutItem(t.Context(), &dynamodb.PutItemInput{TableName: aws.String(table), Item: before}); err != nil {
+				t.Fatal(err)
+			}
+			after, err := migratedRepoItem(before)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stale := migrationUpdate(table, before, after)
+			switch scenario {
+			case "deleted":
+				_, err = client.DeleteItem(t.Context(), &dynamodb.DeleteItemInput{TableName: aws.String(table), Key: key})
+			case "migrated":
+				_, err = client.UpdateItem(t.Context(), migrationUpdate(table, before, after))
+			default:
+				update := "SET #field = :value"
+				field := "bundles"
+				values := map[string]types.AttributeValue{":value": &types.AttributeValueMemberS{Value: "competing state"}}
+				names := map[string]string{"#field": field}
+				if scenario == "legacy-owner" {
+					names["#field"] = "uid"
+					update += ", #heartbeat = :heartbeat"
+					names["#heartbeat"] = "unix"
+					values[":heartbeat"] = &types.AttributeValueMemberN{Value: "123"}
+				} else if scenario == "lease-owner" {
+					names["#field"] = "owner_token"
+					update += ", #heartbeat = :heartbeat"
+					names["#heartbeat"] = "expires_at"
+					values[":heartbeat"] = &types.AttributeValueMemberN{Value: "9223372036854775807"}
+				}
+				_, err = client.UpdateItem(t.Context(), &dynamodb.UpdateItemInput{TableName: aws.String(table), Key: key, UpdateExpression: aws.String(update), ExpressionAttributeNames: names, ExpressionAttributeValues: values})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			read := func() map[string]types.AttributeValue {
+				t.Helper()
+				out, err := client.GetItem(t.Context(), &dynamodb.GetItemInput{TableName: aws.String(table), Key: key, ConsistentRead: aws.Bool(true)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return out.Item
+			}
+			competing := read()
+			_, err = client.UpdateItem(t.Context(), stale)
+			var rejected *types.ConditionalCheckFailedException
+			if !errors.As(err, &rejected) {
+				t.Fatalf("DynamoDB accepted stale %s migration: %v", scenario, err)
+			}
+			if actual := read(); !reflect.DeepEqual(actual, competing) {
+				t.Fatalf("rejected migration changed competing %s state: before=%v after=%v", scenario, competing, actual)
+			}
+		})
+	}
+}

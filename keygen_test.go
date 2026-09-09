@@ -151,11 +151,11 @@ func TestKeychainPushRecipients(t *testing.T) {
 	if err := os.WriteFile(".publickeys", []byte("uncommitted"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pushRecipients(old, tip); err == nil {
+	if _, err := pushRecipients(t.Context(), old, tip); err == nil {
 		t.Fatal("accepted uncommitted recipient edit")
 	}
 	runAt(dir, "git", "restore", ".publickeys")
-	keys, err := pushRecipients(old, tip)
+	keys, err := pushRecipients(t.Context(), old, tip)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func TestKeychainPushRecipients(t *testing.T) {
 		t.Fatal("did not select current generation")
 	}
 	truncated := commit(p)
-	if _, err := pushRecipients(tip, truncated); err == nil || !strings.Contains(err.Error(), "truncated") {
+	if _, err := pushRecipients(t.Context(), tip, truncated); err == nil || !strings.Contains(err.Error(), "truncated") {
 		t.Fatalf("truncated chain was not rejected: %v", err)
 	}
 }

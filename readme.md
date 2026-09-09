@@ -85,7 +85,8 @@ mode `0600` before any writes. The tool checks the account, schema, TTL, and eve
 selected record, conditionally updates unchanged records, then verifies the
 result. It refuses uncleared locks, mixed schemas, and unknown fields. Already
 migrated records are left alone; `--id BUCKET/REPOSITORY` limits the operation to
-one repository. Retain backups until the upgraded clients have been verified.
+one repository using strongly consistent keyed reads, without scanning the table.
+Retain backups until the upgraded clients have been verified.
 
 ## Rotation
 

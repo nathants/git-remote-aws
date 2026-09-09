@@ -10,8 +10,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -26,7 +28,7 @@ func TestLeasePush(t *testing.T) {
 		push("table", "bucket", "repo", "push refs/heads/master:refs/heads/master")
 		return
 	}
-	for _, scenario := range []string{"commit", "upload-failure", "commit-unknown", "no-op", "lease-loss"} {
+	for _, scenario := range []string{"commit", "upload-failure", "commit-unknown", "no-op", "lease-loss", "ancestry-loss", "policy-loss", "recipient-loss"} {
 		t.Run(scenario, func(t *testing.T) {
 			public := setupEphemeralKeys(t)
 			dir := t.TempDir()
@@ -42,6 +44,28 @@ func TestLeasePush(t *testing.T) {
 				runAt(dir, "git", "commit", "--allow-empty", "-qm", "next")
 			}
 			tip := runAtOut(dir, "git", "rev-parse", "HEAD")
+			blockedPID := filepath.Join(t.TempDir(), "blocked-pid")
+			command := map[string]string{"ancestry-loss": "merge-base", "policy-loss": "hash-object", "recipient-loss": "cat-file"}[scenario]
+			if command != "" {
+				git, err := exec.LookPath("git")
+				if err != nil {
+					t.Fatal(err)
+				}
+				bin := t.TempDir()
+				script := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = '%s' ]; then echo $$ > '%s'; kill -STOP $$; fi\nexec '%s' \"$@\"\n", command, blockedPID, git)
+				if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0700); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+				defer func() {
+					if text, err := os.ReadFile(blockedPID); err == nil {
+						pid, err := strconv.Atoi(strings.TrimSpace(string(text)))
+						if err == nil {
+							_ = syscall.Kill(pid, syscall.SIGKILL)
+						}
+					}
+				}()
+			}
 			var mu sync.Mutex
 			var commits, releases, deletes int
 			var committed json.RawMessage
@@ -86,6 +110,12 @@ func TestLeasePush(t *testing.T) {
 							_, _ = io.WriteString(w, `{"__type":"InternalServerError","message":"response lost"}`)
 							return
 						}
+					} else if command != "" {
+						if _, err := os.Stat(blockedPID); err == nil {
+							w.WriteHeader(http.StatusBadRequest)
+							_, _ = io.WriteString(w, `{"__type":"ConditionalCheckFailedException"}`)
+							return
+						}
 					} else if scenario == "lease-loss" {
 						select {
 						case <-blocked:
@@ -125,7 +155,12 @@ func TestLeasePush(t *testing.T) {
 				}
 			}))
 			defer server.Close()
-			child := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestLeasePush$", "-test.timeout=20s")
+			childTimeout := "20s"
+			if command != "" {
+				childTimeout = "5s"
+			}
+			child := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestLeasePush$", "-test.timeout="+childTimeout)
+			child.WaitDelay = time.Second
 			child.Dir = dir
 			child.Env = append(os.Environ(),
 				"GIT_REMOTE_AWS_PUSH_CHILD=1", "AWS_ACCESS_KEY_ID=test", "AWS_SECRET_ACCESS_KEY=test", "AWS_SESSION_TOKEN=",

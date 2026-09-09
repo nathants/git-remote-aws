@@ -223,7 +223,7 @@ func TestMigrationPreviewAndIdempotency(t *testing.T) {
 }
 
 func TestMigrationWritesAndReconciliation(t *testing.T) {
-	for _, scenario := range []string{"success", "lost-response", "changed-preimage", "changed-final", "existing-backup"} {
+	for _, scenario := range []string{"success", "lost-response", "competing-migration", "unconfirmed-write", "changed-final", "existing-backup"} {
 		t.Run(scenario, func(t *testing.T) {
 			in := migrationTestInput(t)
 			steps := append(migrationPreflight(), migrationStep{operation: "Scan", response: `{"Items":[` + oldMigrationJSON + `]}`})
@@ -253,16 +253,19 @@ func TestMigrationWritesAndReconciliation(t *testing.T) {
 						t.Fatal("SDK write was not conditional", err)
 					}
 				}}
-				if scenario == "lost-response" || scenario == "changed-preimage" {
+				if scenario == "lost-response" || scenario == "unconfirmed-write" {
 					write.status, write.response = 500, `{"__type":"InternalServerError","message":"lost"}`
 				}
+				if scenario == "competing-migration" {
+					write.status, write.response = 400, `{"__type":"ConditionalCheckFailedException"}`
+				}
 				steps = append(steps, write)
-				if scenario == "lost-response" {
+				if scenario == "lost-response" || scenario == "competing-migration" {
 					steps = append(steps, migrationStep{operation: "GetItem", response: `{"Item":` + newMigrationJSON + `}`})
-				} else if scenario == "changed-preimage" {
+				} else if scenario == "unconfirmed-write" {
 					steps = append(steps, migrationStep{operation: "GetItem", response: `{"Item":` + oldMigrationJSON + `}`})
 				}
-				if scenario != "changed-preimage" {
+				if scenario != "unconfirmed-write" {
 					final := `{"Items":[` + newMigrationJSON + `]}`
 					if scenario == "changed-final" {
 						final = `{"Items":[]}`
@@ -271,7 +274,7 @@ func TestMigrationWritesAndReconciliation(t *testing.T) {
 				}
 			}
 			err := runMigration(t.Context(), migrationConfig(t, steps), in, io.Discard)
-			wantSuccess := scenario == "success" || scenario == "lost-response"
+			wantSuccess := scenario == "success" || scenario == "lost-response" || scenario == "competing-migration"
 			if (err == nil) != wantSuccess {
 				t.Fatalf("migration result: %v", err)
 			}
@@ -295,7 +298,7 @@ func TestMigrationScanPagination(t *testing.T) {
 			}
 		}},
 	}
-	items, err := scanMigration(t.Context(), dynamodb.NewFromConfig(migrationConfig(t, steps)), migrationTestInput(t))
+	items, err := readMigrationSnapshot(t.Context(), dynamodb.NewFromConfig(migrationConfig(t, steps)), migrationTestInput(t))
 	if err != nil || len(items) != 1 || items["bucket/repo"] == nil {
 		t.Fatalf("wrong selected records: %v %v", items, err)
 	}
@@ -322,5 +325,37 @@ func TestMigrationOutputFailureStopsBeforeWrites(t *testing.T) {
 	}
 	if _, err := os.Stat(in.Backup); !os.IsNotExist(err) {
 		t.Fatalf("backup created after output failed: %v", err)
+	}
+}
+
+func TestMigrationExactIDNeverScans(t *testing.T) {
+	for _, missing := range []bool{false, true} {
+		t.Run(map[bool]string{false: "existing", true: "missing"}[missing], func(t *testing.T) {
+			in := migrationTestInput(t)
+			in.ID = "bucket/repo"
+			response := `{"Item":` + oldMigrationJSON + `}`
+			if missing {
+				response = `{}`
+			}
+			read := migrationStep{operation: "GetItem", response: response, inspect: func(body []byte) {
+				var request struct {
+					ConsistentRead bool
+					Key            json.RawMessage
+				}
+				if err := json.Unmarshal(body, &request); err != nil || !request.ConsistentRead || string(request.Key) != `{"id":{"S":"bucket/repo"}}` {
+					t.Fatalf("not a strongly consistent keyed read: %s (%v)", body, err)
+				}
+			}}
+			steps := append(migrationPreflight(), read)
+			if !missing {
+				steps = append(steps, migrationStep{operation: "UpdateItem", response: `{"Attributes":` + newMigrationJSON + `}`})
+				read.response = `{"Item":` + newMigrationJSON + `}`
+				steps = append(steps, read)
+			}
+			err := runMigration(t.Context(), migrationConfig(t, steps), in, io.Discard)
+			if (err != nil) != missing {
+				t.Fatalf("exact-ID migration: %v", err)
+			}
+		})
 	}
 }

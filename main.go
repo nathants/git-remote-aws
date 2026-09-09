@@ -117,8 +117,8 @@ func refBranch(ref string) string {
 	return branch
 }
 
-func gitBranchContains(branch, hash string) (bool, bool) {
-	cmd := exec.Command("git", "merge-base", "--is-ancestor", hash, branch)
+func gitBranchContains(ctx context.Context, branch, hash string) (bool, bool) {
+	cmd := gitCommand(ctx, "merge-base", "--is-ancestor", hash, branch)
 	err := cmd.Run()
 	if err == nil {
 		return true, true
@@ -189,7 +189,7 @@ func push(table, bucket, prefix, command string) {
 
 	// find latest local hash
 	var stdout bytes.Buffer
-	cmd := exec.CommandContext(ctx, "git", "log", "--format=%H", "-1", localRef)
+	cmd := gitCommand(ctx, "log", "--format=%H", "-1", localRef)
 	cmd.Stdout = &stdout
 	err = cmd.Run()
 	if err != nil {
@@ -200,7 +200,7 @@ func push(table, bucket, prefix, command string) {
 	// Check ancestry against the selected commit, not a branch that may move.
 	if len(bundles) > 0 {
 		hashRemote := hashEnd(last(bundles))
-		contains, _ := gitBranchContains(hash, hashRemote)
+		contains, _ := gitBranchContains(ctx, hash, hashRemote)
 		if !contains {
 			panic("remote has new commits, pull before pushing")
 		}
@@ -210,7 +210,7 @@ func push(table, bucket, prefix, command string) {
 	if len(bundles) > 0 {
 		base = hashEnd(last(bundles))
 	}
-	recipients, err := pushRecipients(base, hash)
+	recipients, err := pushRecipients(ctx, base, hash)
 	if err != nil {
 		panic(err)
 	}
@@ -239,7 +239,7 @@ func push(table, bucket, prefix, command string) {
 		bundleTarget = hashEnd(last(bundles)) + ".." + localRef
 		bundleName = hashEnd(last(bundles)) + ".." + hash
 	} else {
-		cmd := exec.CommandContext(ctx, "git", "log", "--format=\"%H%d\"", hash)
+		cmd := gitCommand(ctx, "log", "--format=\"%H%d\"", hash)
 		var stdout bytes.Buffer
 		cmd.Stdout = &stdout
 		err := cmd.Run()
@@ -264,11 +264,13 @@ func push(table, bucket, prefix, command string) {
 	if err != nil {
 		panic(err)
 	}
+	defer func() { _ = r.Close() }()
 	w, err := os.Create(bundleFileEncrypted)
 	if err != nil {
 		panic(err)
 	}
-	err = libsodium.StreamEncryptRecipients(recipients, r, w)
+	defer func() { _ = w.Close() }()
+	err = encryptPushBundle(ctx, recipients, r, w)
 	if err != nil {
 		panic(err)
 	}
@@ -393,7 +395,7 @@ func fetch(table, bucket, prefix, remotePath, command string) {
 	var bundlesToFetch []string
 	for _, bundle := range reverse(bundles) {
 		hash := hashEnd(bundle)
-		contains, known := gitBranchContains(branch, hash)
+		contains, known := gitBranchContains(context.Background(), branch, hash)
 		if known && contains {
 			break
 		}
@@ -646,7 +648,7 @@ func gitHelper() {
 			// Git may decide the remote is up to date without issuing push.
 			// Read-only discovery must remain available with local edits.
 			if command == "list for-push" {
-				if err := requireCommittedRecipients("HEAD"); err != nil {
+				if err := requireCommittedRecipients(context.Background(), "HEAD"); err != nil {
 					panic(err)
 				}
 			}
@@ -677,8 +679,8 @@ func usage() {
 }
 
 // Read the exact published recipient policy, never an uncommitted worktree edit.
-func recipientChainsAt(commit string) (libsodium.KeyChains, error) {
-	tree, err := exec.Command("git", "ls-tree", "--full-tree", commit, "--", ".publickeys").Output()
+func recipientChainsAt(ctx context.Context, commit string) (libsodium.KeyChains, error) {
+	tree, err := gitCommand(ctx, "ls-tree", "--full-tree", commit, "--", ".publickeys").Output()
 	if err != nil {
 		return nil, fmt.Errorf("inspect committed .publickeys: %w", err)
 	}
@@ -691,7 +693,7 @@ func recipientChainsAt(commit string) (libsodium.KeyChains, error) {
 	if len(fields) != 4 || fields[1] != "blob" || fields[3] != ".publickeys" || (fields[0] != "100644" && fields[0] != "100755") {
 		return nil, fmt.Errorf("committed .publickeys must be a regular file")
 	}
-	cmd := exec.Command("git", "cat-file", "blob", fields[2])
+	cmd := gitCommand(ctx, "cat-file", "blob", fields[2])
 	reader, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
@@ -701,7 +703,7 @@ func recipientChainsAt(commit string) (libsodium.KeyChains, error) {
 	}
 	chains, parseErr := libsodium.ParseKeyChains(reader)
 	if parseErr != nil {
-		_ = cmd.Process.Kill()
+		_ = cmd.Cancel()
 	}
 	waitErr := cmd.Wait()
 	if parseErr != nil {
@@ -716,16 +718,16 @@ func recipientChainsAt(commit string) (libsodium.KeyChains, error) {
 	return chains, nil
 }
 
-func pushRecipients(base, tip string) ([][]byte, error) {
-	if err := requireCommittedRecipients(tip); err != nil {
+func pushRecipients(ctx context.Context, base, tip string) ([][]byte, error) {
+	if err := requireCommittedRecipients(ctx, tip); err != nil {
 		return nil, err
 	}
-	next, err := recipientChainsAt(tip)
+	next, err := recipientChainsAt(ctx, tip)
 	if err != nil {
 		return nil, err
 	}
 	if base != "" {
-		old, err := recipientChainsAt(base)
+		old, err := recipientChainsAt(ctx, base)
 		if err != nil {
 			return nil, err
 		}

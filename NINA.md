@@ -9,16 +9,21 @@ lease-format table cutover before changing storage or push behavior.
   `BUCKET/PREFIX`; `branch` and `bundles` live under `data`. No flat-record
   fallback. The table has only a string partition key `id`, with TTL disabled.
 - Pass the configured DynamoDB client explicitly. Use the lease context for
-  protected requests and bundle creation. Commit metadata only after both S3
-  uploads succeed. Deferred cleanup must use bounded, independent `Release`,
+  protected requests, all push Git commands, and encryption. Commit metadata only
+  after both S3 uploads succeed. Deferred cleanup must use bounded, independent `Release`,
   never write the possibly modified payload. Commit cancels the lease context;
   post-commit S3 cleanup cannot reuse that context. Ambiguous commits must not
   trigger another payload write or deletion of the previous manifest.
+- `gitCommand` puts Git in its own process group, kills descendants on
+  cancellation, and bounds inherited-pipe waits. Do not replace it with bare
+  `exec.CommandContext`. Encryption keeps the shared codec but checks context
+  between chunks and closes its owned streams to interrupt blocked I/O.
 - All clients must stop for a lease-format migration and upgrade before resuming.
   `migration.go` implements the read-only-by-default `--migrate-dynamolock`
   command, not a helper fallback. It scopes by account/table/bucket, backs up original
   DynamoDB JSON before writes, conditionally transforms unchanged records, and
-  verifies the final snapshot. It does not modify S3.
+  verifies the final snapshot. Exact-ID snapshots use strongly consistent keyed
+  reads, never scans. It does not modify S3.
 - Force pushes, multiple remote branches, and uncommitted recipient changes
   remain forbidden. Preserve SHA-1/SHA-256 and historical encrypted bundles.
 
@@ -26,10 +31,11 @@ lease-format table cutover before changing storage or push behavior.
 
 - Gate: `GOTOOLCHAIN=local bash bin/check.sh`. Its Go analysis tools
   must already be installed; the existing script installs missing Go tools.
-  Check prerequisites first rather than allowing an unapproved installation.
+  Check prerequisites first rather than allowing an unapproved installation. The
+  gate also runs the full cloud-free selection below with race instrumentation.
 - Cloud-free tests:
   `GOTOOLCHAIN=local go test -race -count=1 -run '^(TestKey|TestBundle|TestRef|TestEncryption|TestLease|TestMigration)' ./...`.
-  Migration unit tests are included in the gate and can run separately with
+  Migration unit tests can run separately with
   `go test -count=1 -run '^TestMigration' ./...`.
 - Live gate: `GOTOOLCHAIN=local GOFLAGS=-race go test -count=1 -timeout=15m ./...`
   with `GIT_REMOTE_AWS_TEST_ACCOUNT`, `GIT_REMOTE_AWS_TEST_BUCKET`, and
@@ -40,7 +46,10 @@ lease-format table cutover before changing storage or push behavior.
 - Test helpers build into `t.TempDir()`, never over the installed helper. This
   is essential during incompatible table cutovers.
 - `TestDynamolockMigration` runs the actual migration CLI and then reads, acquires,
-  and commits with the new library against AWS. The historical compatibility
-  test migrates metadata between old-helper writes and new-helper reads; it also
+  and commits with the new library against AWS. The stale-preimage test submits
+  actual migration writes after changed payload/ownership, deletion, and competing
+  migration, and verifies DynamoDB rejects them without changing the winner.
+  The historical compatibility test migrates metadata between old-helper writes
+  and new-helper reads; it also
   checks old encrypted bundle ETags after cloning and rotation. Supply the
   independently pinned old artifact described in the README to run it.

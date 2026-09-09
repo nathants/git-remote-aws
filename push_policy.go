@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -13,13 +12,13 @@ import (
 
 // Check the index and the actual working file separately. Git's stat cache and
 // assume-unchanged/skip-worktree flags must not hide uncommitted recipient edits.
-func requireCommittedRecipients(tip string) error {
-	root, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+func requireCommittedRecipients(ctx context.Context, tip string) error {
+	root, err := gitCommand(ctx, "rev-parse", "--show-toplevel").Output()
 	if err != nil {
 		return fmt.Errorf("locate .publickeys worktree: %w", err)
 	}
 	worktree := strings.TrimSuffix(string(root), "\n")
-	index, err := exec.Command("git", "rev-parse", "--git-path", "index").Output()
+	index, err := gitCommand(ctx, "rev-parse", "--git-path", "index").Output()
 	if err != nil {
 		return fmt.Errorf("locate .publickeys index: %w", err)
 	}
@@ -28,13 +27,13 @@ func requireCommittedRecipients(tip string) error {
 	if _, err := os.Lstat(strings.TrimSuffix(string(index), "\n")); err == nil {
 		// An ordinary literal filename also works when our caller pins
 		// GIT_LITERAL_PATHSPECS=1. Pathspec magic would become a different name.
-		if err := exec.Command("git", "-C", worktree, "diff", "--cached", "--quiet", "--no-ext-diff", "--no-textconv", tip, "--", ".publickeys").Run(); err != nil {
+		if err := gitCommand(ctx, "-C", worktree, "diff", "--cached", "--quiet", "--no-ext-diff", "--no-textconv", tip, "--", ".publickeys").Run(); err != nil {
 			return fmt.Errorf(".publickeys index must match the pushed commit; commit recipient changes before pushing: %w", err)
 		}
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("inspect .publickeys index: %w", err)
 	}
-	tree, err := exec.Command("git", "ls-tree", "--full-tree", tip, "--", ".publickeys").Output()
+	tree, err := gitCommand(ctx, "ls-tree", "--full-tree", tip, "--", ".publickeys").Output()
 	if err != nil {
 		return fmt.Errorf("inspect committed .publickeys: %w", err)
 	}
@@ -50,7 +49,7 @@ func requireCommittedRecipients(tip string) error {
 	if !info.Mode().IsRegular() || info.Size() > libsodium.MaxKeyChainsBytes || (info.Mode().Perm()&0100 != 0) != (fields[0] == "100755") {
 		return fmt.Errorf("working .publickeys type, mode, or size does not match a valid committed policy")
 	}
-	actual, err := exec.Command("git", "hash-object", "--no-filters", "--", filename).Output()
+	actual, err := gitCommand(ctx, "hash-object", "--no-filters", "--", filename).Output()
 	if err != nil {
 		return fmt.Errorf("hash working .publickeys: %w", err)
 	}
@@ -61,13 +60,13 @@ func requireCommittedRecipients(tip string) error {
 }
 
 func createPushBundle(ctx context.Context, filename, target, expectedTip string) error {
-	output, err := exec.CommandContext(ctx, "git", "bundle", "create", filename, target).CombinedOutput()
+	output, err := gitCommand(ctx, "bundle", "create", filename, target).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("create Git bundle: %w: %s", err, output)
 	}
 	// The branch may move while this push is running. Never encrypt or upload
 	// a bundle whose content tip differs from its identity and recipient policy.
-	heads, err := exec.CommandContext(ctx, "git", "bundle", "list-heads", filename).Output()
+	heads, err := gitCommand(ctx, "bundle", "list-heads", filename).Output()
 	if err != nil {
 		return fmt.Errorf("inspect generated Git bundle: %w", err)
 	}

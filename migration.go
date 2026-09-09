@@ -156,7 +156,26 @@ func migrationCall[T any](ctx context.Context, request func(context.Context) (T,
 	return request(bounded)
 }
 
-func scanMigration(ctx context.Context, client *dynamodb.Client, in migrationInput) (map[string]map[string]types.AttributeValue, error) {
+func readMigrationSnapshot(ctx context.Context, client *dynamodb.Client, in migrationInput) (map[string]map[string]types.AttributeValue, error) {
+	if in.ID != "" {
+		out, err := migrationCall(ctx, func(ctx context.Context) (*dynamodb.GetItemOutput, error) {
+			return client.GetItem(ctx, &dynamodb.GetItemInput{
+				TableName: aws.String(in.Table), ConsistentRead: aws.Bool(true),
+				Key: map[string]types.AttributeValue{"id": &types.AttributeValueMemberS{Value: in.ID}},
+			})
+		})
+		if err != nil {
+			return nil, err
+		}
+		if len(out.Item) == 0 {
+			return nil, fmt.Errorf("requested item not found: %s", in.ID)
+		}
+		id, ok := out.Item["id"].(*types.AttributeValueMemberS)
+		if !ok || id.Value != in.ID {
+			return nil, errors.New("keyed read returned a different repository id")
+		}
+		return map[string]map[string]types.AttributeValue{in.ID: out.Item}, nil
+	}
 	items := make(map[string]map[string]types.AttributeValue)
 	input := &dynamodb.ScanInput{TableName: aws.String(in.Table), ConsistentRead: aws.Bool(true)}
 	seen := make(map[string]bool)
@@ -172,7 +191,7 @@ func scanMigration(ctx context.Context, client *dynamodb.Client, in migrationInp
 			if !ok || id.Value == "" {
 				return nil, errors.New("table contains an item without a string id")
 			}
-			if !strings.HasPrefix(id.Value, in.Bucket+"/") || (in.ID != "" && id.Value != in.ID) {
+			if !strings.HasPrefix(id.Value, in.Bucket+"/") {
 				continue
 			}
 			if _, exists := items[id.Value]; exists {
@@ -192,9 +211,6 @@ func scanMigration(ctx context.Context, client *dynamodb.Client, in migrationInp
 		}
 		seen[string(marker)] = true
 		input.ExclusiveStartKey = page.LastEvaluatedKey
-	}
-	if in.ID != "" && items[in.ID] == nil {
-		return nil, fmt.Errorf("requested item not found: %s", in.ID)
 	}
 	return items, nil
 }
@@ -311,7 +327,7 @@ func runMigration(ctx context.Context, cfg aws.Config, in migrationInput, output
 	if ttl.TimeToLiveDescription == nil || ttl.TimeToLiveDescription.TimeToLiveStatus != types.TimeToLiveStatusDisabled {
 		return errors.New("repository table TTL must be DISABLED; lease expiry is not deletion")
 	}
-	before, err := scanMigration(ctx, client, in)
+	before, err := readMigrationSnapshot(ctx, client, in)
 	if err != nil {
 		return err
 	}
@@ -374,7 +390,7 @@ func runMigration(ctx context.Context, cfg aws.Config, in migrationInput, output
 			return err
 		}
 	}
-	actual, err := scanMigration(ctx, client, in)
+	actual, err := readMigrationSnapshot(ctx, client, in)
 	if err != nil {
 		return err
 	}
