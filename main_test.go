@@ -112,9 +112,9 @@ func repoRoot() string {
 	return path.Dir(filename)
 }
 
-func buildGitRemoteAws() string {
+func buildGitRemoteAws(t *testing.T) string {
 	root := repoRoot()
-	binary := path.Join(root, "git-remote-aws")
+	binary := path.Join(t.TempDir(), "git-remote-aws")
 	cmd := exec.Command("go", "build", "-o", binary, ".")
 	cmd.Dir = root
 	cmd.Stdout = os.Stdout
@@ -123,18 +123,18 @@ func buildGitRemoteAws() string {
 	if err != nil {
 		panic(err)
 	}
-	ensureGitRemoteAwsOnPath(binary)
+	ensureGitRemoteAwsOnPath(t, binary)
 	return binary
 }
 
-func ensureGitRemoteAwsOnPath(binary string) {
+func ensureGitRemoteAwsOnPath(t *testing.T, binary string) {
 	root := path.Dir(binary)
 	sep := string(os.PathListSeparator)
 	pathEnv := os.Getenv("PATH")
 	if pathEnv == "" {
-		_ = os.Setenv("PATH", root)
+		t.Setenv("PATH", root)
 	} else {
-		_ = os.Setenv("PATH", root+sep+pathEnv)
+		t.Setenv("PATH", root+sep+pathEnv)
 	}
 	actual, err := exec.LookPath("git-remote-aws")
 	if err != nil {
@@ -152,7 +152,7 @@ func configureGitIdentity(dir string) {
 	runAt(dir, "git", "config", "user.email", "git-remote-aws-test@example.com")
 }
 
-func getTestBucketAndTable() (string, string, string) {
+func getTestBucketAndTable(t *testing.T) (string, string, string) {
 	prefix := newUuid()
 	account := os.Getenv("GIT_REMOTE_AWS_TEST_ACCOUNT")
 	if account == "" {
@@ -177,7 +177,7 @@ func getTestBucketAndTable() (string, string, string) {
 	if err != nil {
 		panic(err)
 	}
-	buildGitRemoteAws()
+	buildGitRemoteAws(t)
 	setCommitDate()
 	return table, bucket, prefix
 }
@@ -288,7 +288,7 @@ func assertLog(t *testing.T, dir string, expected []string) {
 }
 
 func getRepoMeta(table, bucket, prefix string) *RepoMeta {
-	repoMeta, err := dynamolock.Read[RepoMeta](context.Background(), table, bucket+"/"+prefix)
+	repoMeta, err := dynamolock.Read[RepoMeta](context.Background(), lib.DynamoDBClient(), table, bucket+"/"+prefix)
 	if err != nil {
 		panic(err)
 	}
@@ -379,7 +379,7 @@ func TestBasic(t *testing.T) {
 	dir, cleanup := newTempdir()
 	defer cleanup()
 
-	table, bucket, prefix := getTestBucketAndTable()
+	table, bucket, prefix := getTestBucketAndTable(t)
 	defer cleanupAws(table, bucket, prefix)
 
 	publicKey := setupEphemeralKeys(t)
@@ -417,7 +417,7 @@ func TestBasicSha256(t *testing.T) {
 	dir, cleanup := newTempdir()
 	defer cleanup()
 
-	table, bucket, prefix := getTestBucketAndTable()
+	table, bucket, prefix := getTestBucketAndTable(t)
 	defer cleanupAws(table, bucket, prefix)
 
 	publicKey := setupEphemeralKeys(t)
@@ -455,7 +455,7 @@ func TestPushBeforePullShouldFailSha256(t *testing.T) {
 	dir, cleanup := newTempdir()
 	defer cleanup()
 
-	table, bucket, prefix := getTestBucketAndTable()
+	table, bucket, prefix := getTestBucketAndTable(t)
 	defer cleanupAws(table, bucket, prefix)
 
 	publicKey := setupEphemeralKeys(t)
@@ -510,7 +510,7 @@ func TestPushBeforePullShouldFailSha256(t *testing.T) {
 
 func TestEncryption(t *testing.T) {
 	setupEphemeralKeys(t)
-	binary := buildGitRemoteAws()
+	binary := buildGitRemoteAws(t)
 
 	dir, cleanup := newTempdir()
 	defer cleanup()
@@ -523,7 +523,7 @@ func TestEncryption(t *testing.T) {
 func TestFirstPushTagIsBanned(t *testing.T) {
 	dir, cleanup := newTempdir()
 	defer cleanup()
-	table, bucket, prefix := getTestBucketAndTable()
+	table, bucket, prefix := getTestBucketAndTable(t)
 	defer cleanupAws(table, bucket, prefix)
 
 	publicKey := setupEphemeralKeys(t)
@@ -545,7 +545,7 @@ func TestFirstPushTagIsBanned(t *testing.T) {
 func TestFirstPushBranchWithSlashIsBanned(t *testing.T) {
 	dir, cleanup := newTempdir()
 	defer cleanup()
-	table, bucket, prefix := getTestBucketAndTable()
+	table, bucket, prefix := getTestBucketAndTable(t)
 	defer cleanupAws(table, bucket, prefix)
 
 	publicKey := setupEphemeralKeys(t)
@@ -567,7 +567,7 @@ func TestFirstPushBranchWithSlashIsBanned(t *testing.T) {
 func TestBranchesAndTagsAreBanned(t *testing.T) {
 	dir, cleanup := newTempdir()
 	defer cleanup()
-	table, bucket, prefix := getTestBucketAndTable()
+	table, bucket, prefix := getTestBucketAndTable(t)
 	defer cleanupAws(table, bucket, prefix)
 
 	publicKey := setupEphemeralKeys(t)
@@ -596,7 +596,7 @@ func TestBranchesAndTagsAreBanned(t *testing.T) {
 func TestMutatingHistoryIsBanned(t *testing.T) {
 	dir, cleanup := newTempdir()
 	defer cleanup()
-	table, bucket, prefix := getTestBucketAndTable()
+	table, bucket, prefix := getTestBucketAndTable(t)
 	defer cleanupAws(table, bucket, prefix)
 
 	publicKey := setupEphemeralKeys(t)
@@ -628,7 +628,7 @@ func TestMutatingHistoryIsBanned(t *testing.T) {
 func TestPushWithoutPullShouldFail(t *testing.T) {
 	dir, cleanup := newTempdir()
 	defer cleanup()
-	table, bucket, prefix := getTestBucketAndTable()
+	table, bucket, prefix := getTestBucketAndTable(t)
 	defer cleanupAws(table, bucket, prefix)
 
 	publicKey := setupEphemeralKeys(t)
@@ -669,7 +669,7 @@ func TestPushWithoutPullShouldFail(t *testing.T) {
 func TestPushFailsWhenBundlesMetadataObjectIsMissing(t *testing.T) {
 	dir, cleanup := newTempdir()
 	defer cleanup()
-	table, bucket, prefix := getTestBucketAndTable()
+	table, bucket, prefix := getTestBucketAndTable(t)
 	defer cleanupAws(table, bucket, prefix)
 
 	publicKey := setupEphemeralKeys(t)
@@ -703,7 +703,7 @@ func TestPushFailsWhenBundlesMetadataObjectIsMissing(t *testing.T) {
 func TestPushFailsWhenBundlesMetadataObjectIsEmpty(t *testing.T) {
 	dir, cleanup := newTempdir()
 	defer cleanup()
-	table, bucket, prefix := getTestBucketAndTable()
+	table, bucket, prefix := getTestBucketAndTable(t)
 	defer cleanupAws(table, bucket, prefix)
 
 	publicKey := setupEphemeralKeys(t)
@@ -737,7 +737,7 @@ func TestPushFailsWhenBundlesMetadataObjectIsEmpty(t *testing.T) {
 func TestFetchFailsWhenBundleMetadataContainsPathTraversal(t *testing.T) {
 	dir, cleanup := newTempdir()
 	defer cleanup()
-	table, bucket, prefix := getTestBucketAndTable()
+	table, bucket, prefix := getTestBucketAndTable(t)
 	defer cleanupAws(table, bucket, prefix)
 
 	publicKey := setupEphemeralKeys(t)

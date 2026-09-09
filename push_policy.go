@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -59,14 +60,14 @@ func requireCommittedRecipients(tip string) error {
 	return nil
 }
 
-func createPushBundle(filename, target, expectedTip string) error {
-	output, err := exec.Command("git", "bundle", "create", filename, target).CombinedOutput()
+func createPushBundle(ctx context.Context, filename, target, expectedTip string) error {
+	output, err := exec.CommandContext(ctx, "git", "bundle", "create", filename, target).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("create Git bundle: %w: %s", err, output)
 	}
 	// The branch may move while this push is running. Never encrypt or upload
 	// a bundle whose content tip differs from its identity and recipient policy.
-	heads, err := exec.Command("git", "bundle", "list-heads", filename).Output()
+	heads, err := exec.CommandContext(ctx, "git", "bundle", "list-heads", filename).Output()
 	if err != nil {
 		return fmt.Errorf("inspect generated Git bundle: %w", err)
 	}

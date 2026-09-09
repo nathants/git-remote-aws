@@ -13,7 +13,7 @@ import (
 
 func TestKeyCLIMultipleRecipientsAndRotation(t *testing.T) {
 	setupEphemeralKeys(t)
-	binary := buildGitRemoteAws()
+	binary := buildGitRemoteAws(t)
 	dir := t.TempDir()
 	public, secret, err := libsodium.RotateKeyChain(nil, nil)
 	if err != nil {
@@ -75,7 +75,7 @@ func TestKeyCLIMultipleRecipientsAndRotation(t *testing.T) {
 }
 
 func TestKeyCLISecretCommandLifecycle(t *testing.T) {
-	binary := buildGitRemoteAws()
+	binary := buildGitRemoteAws(t)
 	shared := runAtOut(repoRoot(), "go", "list", "-m", "-f", "{{.Dir}}", "github.com/nathants/go-libsodium")
 	cmd := exec.Command("python3", "-I", filepath.Join(shared, "keysource", "testdata", "command-lifecycle.py"), binary, "--decrypt")
 	if output, err := cmd.CombinedOutput(); err != nil {

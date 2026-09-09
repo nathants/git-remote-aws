@@ -28,7 +28,7 @@ func TestStoredDataCompatibilityAndRotation(t *testing.T) {
 	libsodium.Init()
 	for _, objectFormat := range []string{"sha1", "sha256"} {
 		t.Run(objectFormat, func(t *testing.T) {
-			table, bucket, prefix := getTestBucketAndTable()
+			table, bucket, prefix := getTestBucketAndTable(t)
 			if err := lib.DynamoDBWaitForReady(context.Background(), table); err != nil {
 				t.Fatal(err)
 			}
@@ -76,6 +76,7 @@ func TestStoredDataCompatibilityAndRotation(t *testing.T) {
 				etags[name] = aws.ToString(out.ETag)
 			}
 			t.Setenv("PATH", newPath)
+			migrateTestRepository(t, table, bucket, prefix)
 			clone := filepath.Join(t.TempDir(), "clone")
 			runAt("", "git", "clone", remote, clone)
 			if got := runAtOut(clone, "git", "rev-parse", "HEAD"); got != expected {
@@ -145,7 +146,7 @@ func TestStoredDataCompatibilityAndRotation(t *testing.T) {
 }
 
 func TestPushNoOpRejectsUncommittedRecipients(t *testing.T) {
-	table, bucket, prefix := getTestBucketAndTable()
+	table, bucket, prefix := getTestBucketAndTable(t)
 	defer cleanupAws(table, bucket, prefix)
 	if err := lib.DynamoDBWaitForReady(context.Background(), table); err != nil {
 		t.Fatal(err)

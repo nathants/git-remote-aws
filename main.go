@@ -73,13 +73,13 @@ func bundleNamesFromMetadata(location string, data []byte) []string {
 	return bundles
 }
 
-func getBundles(bucket, s3Key string) []string {
+func getBundles(ctx context.Context, bucket, s3Key string) []string {
 	if s3Key == "" {
 		return nil
 	}
 	location := "s3://" + bucket + "/" + s3Key
 	fmt.Fprintln(os.Stderr, "get "+location)
-	out, err := lib.S3Client().GetObject(context.Background(), &s3.GetObjectInput{
+	out, err := lib.S3Client().GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(s3Key),
 	})
@@ -151,9 +151,11 @@ func push(table, bucket, prefix, command string) {
 	}
 	branch := localBranch
 
-	// fetch and lock remote bundles, defering unlock
+	// Cleanup releases ownership only; failed pushes must never publish metadata.
 	fmt.Fprintln(os.Stderr, "get dynamodb://"+table+"/"+bucket+"/"+prefix)
-	unlock, _, repoMeta, err := dynamolock.Lock[RepoMeta](context.Background(), &dynamolock.LockInput{
+	lockCtx, cancelLock := context.WithCancel(context.Background())
+	defer cancelLock()
+	lease, repoMeta, err := dynamolock.Lock[RepoMeta](lockCtx, lib.DynamoDBClient(), &dynamolock.LockInput{
 		Table:             table,
 		ID:                bucket + "/" + prefix,
 		HeartbeatMaxAge:   10 * time.Second,
@@ -162,20 +164,18 @@ func push(table, bucket, prefix, command string) {
 	if err != nil {
 		panic(err)
 	}
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := lease.Release(cleanup); err != nil {
+			panic(fmt.Errorf("release repository lease: %w", err))
+		}
+	}()
+	ctx := lease.Context()
 	if repoMeta == nil {
 		repoMeta = &RepoMeta{}
 	}
-	unlocked := false
-	defer func() {
-		if !unlocked {
-			err := unlock(context.Background(), repoMeta)
-			if err != nil {
-				panic(err)
-			}
-			fmt.Fprintln(os.Stderr, "defer unlock put dynamodb://"+table+"/"+bucket+"/"+prefix, repoMeta)
-		}
-	}()
-	bundles := getBundles(bucket, repoMeta.BundlesS3Key)
+	bundles := getBundles(ctx, bucket, repoMeta.BundlesS3Key)
 
 	if repoMeta.Branch != "" {
 		// assert local branch is the same as remote
@@ -189,7 +189,7 @@ func push(table, bucket, prefix, command string) {
 
 	// find latest local hash
 	var stdout bytes.Buffer
-	cmd := exec.Command("git", "log", "--format=%H", "-1", localRef)
+	cmd := exec.CommandContext(ctx, "git", "log", "--format=%H", "-1", localRef)
 	cmd.Stdout = &stdout
 	err = cmd.Run()
 	if err != nil {
@@ -239,7 +239,7 @@ func push(table, bucket, prefix, command string) {
 		bundleTarget = hashEnd(last(bundles)) + ".." + localRef
 		bundleName = hashEnd(last(bundles)) + ".." + hash
 	} else {
-		cmd := exec.Command("git", "log", "--format=\"%H%d\"", hash)
+		cmd := exec.CommandContext(ctx, "git", "log", "--format=\"%H%d\"", hash)
 		var stdout bytes.Buffer
 		cmd.Stdout = &stdout
 		err := cmd.Run()
@@ -254,7 +254,7 @@ func push(table, bucket, prefix, command string) {
 	// create bundle
 	bundleFile := tempdir + "/" + bundleName
 	fmt.Fprintln(os.Stderr, "git bundle:", path.Base(bundleFile))
-	if err := createPushBundle(bundleFile, bundleTarget, hash); err != nil {
+	if err := createPushBundle(ctx, bundleFile, bundleTarget, hash); err != nil {
 		panic(err)
 	}
 
@@ -286,8 +286,9 @@ func push(table, bucket, prefix, command string) {
 	if err != nil {
 		panic(err)
 	}
+	defer func() { _ = f.Close() }()
 	fmt.Fprintln(os.Stderr, "put s3://"+bucket+"/"+prefix+"/"+bundleName)
-	_, err = lib.S3Client().PutObject(context.Background(), &s3.PutObjectInput{
+	_, err = lib.S3Client().PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(prefix + "/" + bundleName),
 		Body:   f,
@@ -302,7 +303,7 @@ func push(table, bucket, prefix, command string) {
 	oldBundlesS3Key := repoMeta.BundlesS3Key
 	repoMeta.BundlesS3Key = prefix + "/" + "bundles_" + hash
 	fmt.Fprintln(os.Stderr, "put s3://"+bucket+"/"+repoMeta.BundlesS3Key)
-	_, err = lib.S3Client().PutObject(context.Background(), &s3.PutObjectInput{
+	_, err = lib.S3Client().PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(repoMeta.BundlesS3Key),
 		Body:   bytes.NewReader(bundleData),
@@ -311,12 +312,11 @@ func push(table, bucket, prefix, command string) {
 		panic(err)
 	}
 
-	err = unlock(context.Background(), repoMeta)
+	err = lease.Commit(ctx, repoMeta)
 	if err != nil {
 		panic(err)
 	}
 	fmt.Fprintln(os.Stderr, "put dynamodb://"+table+"/"+bucket+"/"+prefix, repoMeta)
-	unlocked = true
 
 	// delete previous bundles metadata when a new one is written
 	if oldBundlesS3Key != repoMeta.BundlesS3Key && oldBundlesS3Key != "" {
@@ -363,7 +363,7 @@ func fetch(table, bucket, prefix, remotePath, command string) {
 	branch := refBranch(ref)
 
 	fmt.Fprintln(os.Stderr, "get dynamodb://"+table+"/"+bucket+"/"+prefix)
-	repoMeta, err := dynamolock.Read[RepoMeta](context.Background(), table, bucket+"/"+prefix)
+	repoMeta, err := dynamolock.Read[RepoMeta](context.Background(), lib.DynamoDBClient(), table, bucket+"/"+prefix)
 	if err != nil {
 		panic(err)
 	}
@@ -384,7 +384,7 @@ func fetch(table, bucket, prefix, remotePath, command string) {
 	// fetch remote bundles metadata
 	var bundles []string
 	if repoMeta.BundlesS3Key != "" {
-		bundles = getBundles(bucket, repoMeta.BundlesS3Key)
+		bundles = getBundles(context.Background(), bucket, repoMeta.BundlesS3Key)
 	}
 
 	// walk backward from newest to oldest through remote bundles.
@@ -501,7 +501,7 @@ func fetch(table, bucket, prefix, remotePath, command string) {
 func list(table, bucket, prefix string) {
 
 	fmt.Fprintln(os.Stderr, "get dynamodb://"+table+"/"+bucket+"/"+prefix)
-	repoMeta, err := dynamolock.Read[RepoMeta](context.Background(), table, bucket+"/"+prefix)
+	repoMeta, err := dynamolock.Read[RepoMeta](context.Background(), lib.DynamoDBClient(), table, bucket+"/"+prefix)
 	if err != nil {
 		panic(err)
 	}
@@ -520,7 +520,7 @@ func list(table, bucket, prefix string) {
 	// fetch remote bundles metadata
 	var remoteBundles []string
 	if repoMeta != nil && repoMeta.BundlesS3Key != "" {
-		remoteBundles = getBundles(bucket, repoMeta.BundlesS3Key)
+		remoteBundles = getBundles(context.Background(), bucket, repoMeta.BundlesS3Key)
 	}
 
 	// communicate with git caller
@@ -771,6 +771,10 @@ func main() {
 		decrypt()
 	case "-k", "--keygen":
 		if err := keygen(os.Args[2:], os.Stdout); err != nil {
+			panic(err)
+		}
+	case "--migrate-dynamolock":
+		if err := migrateDynamolock(os.Args[2:], os.Stdout); err != nil {
 			panic(err)
 		}
 	default:

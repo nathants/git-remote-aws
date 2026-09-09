@@ -62,6 +62,31 @@ AWS permissions. Otherwise provision them beforehand. Clone and fetch work norma
 commit. Commit recipient edits before pushing; staged or unstaged edits are rejected.
 Rows need not be sorted; blank lines and a missing final newline are allowed.
 
+## Upgrade existing tables
+
+The lease-format upgrade is a hard cutover. Stop **all** old and new helpers
+(including automated pushes) before migrating, and upgrade every client before
+resuming. Old helpers cannot safely access migrated tables. The string `id`
+partition key and S3 objects do not change; `branch` and `bundles` move into a
+`data` map. Do not enable DynamoDB TTL on repository tables.
+
+Build the upgraded helper without replacing the installed binary, then preview
+one bucket's records:
+
+```sh
+go build -o /private/path/git-remote-aws .
+/private/path/git-remote-aws --migrate-dynamolock \
+  --account ACCOUNT_ID --region REGION --table TABLE --bucket BUCKET
+```
+
+Repeat with `--apply --writers-stopped --backup /private/path/metadata.json` to
+migrate. The backup must be a new file; it stores the original DynamoDB JSON with
+mode `0600` before any writes. The tool checks the account, schema, TTL, and every
+selected record, conditionally updates unchanged records, then verifies the
+result. It refuses uncleared locks, mixed schemas, and unknown fields. Already
+migrated records are left alone; `--id BUCKET/REPOSITORY` limits the operation to
+one repository. Retain backups until the upgraded clients have been verified.
+
 ## Rotation
 
 Rerun the personal-file `--keygen` command above to extend both chains, then update
@@ -90,8 +115,8 @@ Cloud-free checks (CLI/terminal tests require Python 3.8+):
 
 ```sh
 bash bin/check.sh
-go test -run '^(TestKey|TestBundle|TestRef|TestEncryption)' ./...
-GOFLAGS=-race go test -run '^(TestKey|TestBundle|TestRef|TestEncryption)' ./...
+go test -run '^(TestKey|TestBundle|TestRef|TestEncryption|TestLease|TestMigration)' ./...
+GOFLAGS=-race go test -run '^(TestKey|TestBundle|TestRef|TestEncryption|TestLease|TestMigration)' ./...
 ```
 
 AWS tests require credentials and `GIT_REMOTE_AWS_TEST_{ACCOUNT,BUCKET,TABLE}`.

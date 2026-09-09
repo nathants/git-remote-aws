@@ -12,8 +12,6 @@ github.com/aws/aws-sdk-go-v2/credentials v1.19.36 h1:84s5xMme6ENYEdKG8rsbSFFg/8+
 github.com/aws/aws-sdk-go-v2/credentials v1.19.36/go.mod h1:c46BLdagDLIswjgt+GeQOslXgeS0E6wCacs5yZbxPGk=
 github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue v1.20.61 h1:43X3+XVO7TA/stN1cLfHrNNzCZBrNAS+QRrKNyQ7mZA=
 github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue v1.20.61/go.mod h1:71ZFBh/wl/lz4jnrqPDWusfMlewy6YV+x/ZI8hYA2wk=
-github.com/aws/aws-sdk-go-v2/feature/dynamodb/expression v1.8.50 h1:cMl9E1ecltUU49OoltINt5oZhQ3Z/r+cflwSsypMXJI=
-github.com/aws/aws-sdk-go-v2/feature/dynamodb/expression v1.8.50/go.mod h1:4NmUhB+EJ4IkFsUOi/ifMd0polh8OTzED3EISLW0fc8=
 github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.37 h1:b5tb+CZItBkydC7r3hTNdSO3pszG1R2EtnA+7TePQPk=
 github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.37/go.mod h1:ZQ+6SU9X0oz6+7MUCSswv9Mjci4eaqZr21HI2RVy/yA=
 github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.37 h1:lznzIOvvbqjfe8UAaciCRJgBgJsxuTROKlhZuXQWfv8=
@@ -110,8 +108,8 @@ github.com/mattn/go-isatty v0.0.24 h1:tGZZoVgT/KiqK1c8ocVLeDS8BSWMRd47J3Lbz7vsRe
 github.com/mattn/go-isatty v0.0.24/go.mod h1:nMCL3Zebbrt45jsMDgnfIwz6ydEQApk5oEI3HqDio6A=
 github.com/mikesmitty/edkey v0.0.0-20170222072505-3356ea4e686a h1:eU8j/ClY2Ty3qdHnn0TyW3ivFoPC/0F1gQZz8yTxbbE=
 github.com/mikesmitty/edkey v0.0.0-20170222072505-3356ea4e686a/go.mod h1:v8eSC2SMp9/7FTKUncp7fH9IwPfw+ysMObcEz5FWheQ=
-github.com/nathants/go-dynamolock v0.0.0-20260829060622-e276e75028fc h1:rxB7Ip/2bcmj0vN4ih/sni4mCTSELuMgESJ7he+z7u0=
-github.com/nathants/go-dynamolock v0.0.0-20260829060622-e276e75028fc/go.mod h1:gmUP7y2pjFR88MAkfdxAWKAYS3jfYcVoyVqFw7uxIMo=
+github.com/nathants/go-dynamolock v0.0.0-20260909022021-40f0418786d9 h1:AMkzc2ckahBBUUIyccU/YILzfM0j9bRxe/6OZtMM6zU=
+github.com/nathants/go-dynamolock v0.0.0-20260909022021-40f0418786d9/go.mod h1:y5IlH4tco1p+PDgyJJ9kIxSMve5u8Jhk59jvicO28jA=
 github.com/nathants/go-libsodium v0.0.0-20260907150908-165cd76c0d68 h1:8n2I2uB3nNUO1QFtUCwe7PJ+ZyWtL2oOjcL+E7n5ZJg=
 github.com/nathants/go-libsodium v0.0.0-20260907150908-165cd76c0d68/go.mod h1:wMPNwZEaPLpMFKObFArRrL/qnjstip98kIyzzSkaahk=
 github.com/nathants/libaws v0.0.0-20260907082537-f80c2611a933 h1:w2r1X9ErufeZHu5zJdROrXKG9yjDg0MJ8Q0VWzxeXS0=

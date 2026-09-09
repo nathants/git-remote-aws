@@ -46,3 +46,6 @@ go vet ./...
 
 echo go build
 go build -o /dev/null .
+
+echo migration tests
+GIT_REMOTE_AWS_TEST_ACCOUNT= go test -count=1 -run '^TestMigration' ./...

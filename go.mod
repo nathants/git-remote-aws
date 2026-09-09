@@ -4,10 +4,13 @@ go 1.27.0
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.43.6
+	github.com/aws/aws-sdk-go-v2/config v1.32.37
+	github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue v1.20.61
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.63.3
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.107.2
+	github.com/aws/aws-sdk-go-v2/service/sts v1.45.6
 	github.com/gofrs/uuid/v5 v5.5.1
-	github.com/nathants/go-dynamolock v0.0.0-20260829060622-e276e75028fc
+	github.com/nathants/go-dynamolock v0.0.0-20260909022021-40f0418786d9
 	github.com/nathants/go-libsodium v0.0.0-20260907150908-165cd76c0d68
 	github.com/nathants/libaws v0.0.0-20260907082537-f80c2611a933
 	golang.org/x/sys v0.47.0
@@ -17,10 +20,7 @@ require (
 	github.com/avast/retry-go v3.0.0+incompatible // indirect
 	github.com/aws/aws-lambda-go v1.54.0 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.18 // indirect
-	github.com/aws/aws-sdk-go-v2/config v1.32.37 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.36 // indirect
-	github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue v1.20.61 // indirect
-	github.com/aws/aws-sdk-go-v2/feature/dynamodb/expression v1.8.50 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.37 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.37 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.37 // indirect
@@ -53,7 +53,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.46.6 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sso v1.33.6 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.38.6 // indirect
-	github.com/aws/aws-sdk-go-v2/service/sts v1.45.6 // indirect
 	github.com/aws/smithy-go v1.27.8 // indirect
 	github.com/gofrs/uuid v4.4.0+incompatible // indirect
 	github.com/golang/protobuf v1.5.4 // indirect

@@ -124,13 +124,13 @@ func TestBundleRejectsTipChangeDuringCreation(t *testing.T) {
 				if incremental {
 					target = base + ".." + target
 				}
-				if err := createPushBundle(filepath.Join(t.TempDir(), "good.bundle"), target, tip); err != nil {
+				if err := createPushBundle(t.Context(), filepath.Join(t.TempDir(), "good.bundle"), target, tip); err != nil {
 					t.Fatal(err)
 				}
 				// Simulate a local commit landing after push selected its tip and
 				// recipients, but before Git resolves the branch for bundle creation.
 				commit("concurrent local commit")
-				if err := createPushBundle(filepath.Join(t.TempDir(), "raced.bundle"), target, tip); err == nil || !strings.Contains(err.Error(), "tip changed") {
+				if err := createPushBundle(t.Context(), filepath.Join(t.TempDir(), "raced.bundle"), target, tip); err == nil || !strings.Contains(err.Error(), "tip changed") {
 					t.Fatalf("bundle with wrong recorded identity was accepted: %v", err)
 				}
 			})
