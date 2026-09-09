@@ -16,19 +16,17 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	"github.com/nathants/go-libsodium"
 )
 
 // Script the provider responses, not DynamoDB's condition evaluator. The child
-// runs the actual push path with isolated SDK configuration and real Git data.
+// runs the actual CLI, including error recovery, with isolated SDK configuration.
 func TestLeasePush(t *testing.T) {
 	if os.Getenv("GIT_REMOTE_AWS_PUSH_CHILD") == "1" {
-		libsodium.Init()
-		push("table", "bucket", "repo", "push refs/heads/master:refs/heads/master")
+		os.Args = []string{"git-remote-aws", "origin", "aws://bucket+table/repo"}
+		main()
 		return
 	}
-	for _, scenario := range []string{"commit", "upload-failure", "commit-unknown", "no-op", "lease-loss", "ancestry-loss", "policy-loss", "recipient-loss"} {
+	for _, scenario := range []string{"commit", "upload-failure", "commit-unknown", "no-op", "lease-loss", "ancestry-loss", "policy-loss", "recipient-loss", "commit-unknown-release-failure", "branch-failure-release-failure", "no-op-release-failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			public := setupEphemeralKeys(t)
 			dir := t.TempDir()
@@ -40,7 +38,7 @@ func TestLeasePush(t *testing.T) {
 			runAt(dir, "git", "add", ".publickeys")
 			runAt(dir, "git", "commit", "-qm", "base")
 			base := runAtOut(dir, "git", "rev-parse", "HEAD")
-			if scenario != "no-op" {
+			if !strings.HasPrefix(scenario, "no-op") {
 				runAt(dir, "git", "commit", "--allow-empty", "-qm", "next")
 			}
 			tip := runAtOut(dir, "git", "rev-parse", "HEAD")
@@ -83,6 +81,10 @@ func TestLeasePush(t *testing.T) {
 				defer mu.Unlock()
 				if target := r.Header.Get("X-Amz-Target"); target != "" {
 					w.Header().Set("Content-Type", "application/x-amz-json-1.0")
+					if strings.HasSuffix(target, ".DescribeTable") {
+						_, _ = io.WriteString(w, `{"Table":{"TableStatus":"ACTIVE"}}`)
+						return
+					}
 					var request struct {
 						UpdateExpression          string
 						ExpressionAttributeValues map[string]json.RawMessage
@@ -97,15 +99,24 @@ func TestLeasePush(t *testing.T) {
 					}
 					if !acquired {
 						acquired = true
-						data := `{"branch":{"S":"master"},"bundles":{"S":"repo/bundles_old"}}`
+						branch := "master"
+						if strings.HasPrefix(scenario, "branch-failure") {
+							branch = "other"
+						}
+						data := fmt.Sprintf(`{"branch":{"S":%q},"bundles":{"S":"repo/bundles_old"}}`, branch)
 						_, _ = fmt.Fprintf(w, `{"Attributes":{"id":{"S":"bucket/repo"},"owner_token":%s,"expires_at":%s,"data":{"M":%s}}}`, request.ExpressionAttributeValues[":owner"], request.ExpressionAttributeValues[":expires"], data)
 						return
 					} else if request.UpdateExpression == "REMOVE #owner, #expires" {
 						releases++
+						if strings.HasSuffix(scenario, "release-failure") {
+							w.WriteHeader(http.StatusBadRequest)
+							_, _ = io.WriteString(w, `{"__type":"AccessDeniedException","message":"release rejected"}`)
+							return
+						}
 					} else if data := request.ExpressionAttributeValues[":data"]; data != nil {
 						commits++
 						committed = data
-						if scenario == "commit-unknown" {
+						if strings.HasPrefix(scenario, "commit-unknown") {
 							w.WriteHeader(http.StatusInternalServerError)
 							_, _ = io.WriteString(w, `{"__type":"InternalServerError","message":"response lost"}`)
 							return
@@ -129,6 +140,8 @@ func TestLeasePush(t *testing.T) {
 					return
 				}
 				switch r.Method {
+				case http.MethodHead:
+					w.Header().Set("X-Amz-Bucket-Region", "us-east-1")
 				case http.MethodGet:
 					_, _ = fmt.Fprintf(w, "%s..%s", zeroHash, base)
 				case http.MethodPut:
@@ -159,15 +172,8 @@ func TestLeasePush(t *testing.T) {
 			if command != "" {
 				childTimeout = "5s"
 			}
-			child := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestLeasePush$", "-test.timeout="+childTimeout)
-			child.WaitDelay = time.Second
-			child.Dir = dir
-			child.Env = append(os.Environ(),
-				"GIT_REMOTE_AWS_PUSH_CHILD=1", "AWS_ACCESS_KEY_ID=test", "AWS_SECRET_ACCESS_KEY=test", "AWS_SESSION_TOKEN=",
-				"AWS_REGION=us-east-1", "AWS_DEFAULT_REGION=us-east-1", "AWS_EC2_METADATA_DISABLED=true",
-				"AWS_CONFIG_FILE=/dev/null", "AWS_SHARED_CREDENTIALS_FILE=/dev/null", "AWS_PROFILE=",
-				"AWS_ENDPOINT_URL_DYNAMODB="+server.URL, "AWS_ENDPOINT_URL_S3="+server.URL,
-			)
+			child := testHelperCommand(t, dir, server.URL, childTimeout)
+			child.Stdin = strings.NewReader("push refs/heads/master:refs/heads/master\n\n")
 			output, err := child.CombinedOutput()
 			wantSuccess := scenario == "commit" || scenario == "no-op"
 			if (err == nil) != wantSuccess {
@@ -178,7 +184,7 @@ func TestLeasePush(t *testing.T) {
 			wantCommits, wantReleases, wantDeletes := 0, 1, 0
 			if scenario == "commit" {
 				wantCommits, wantReleases, wantDeletes = 1, 0, 1
-			} else if scenario == "commit-unknown" {
+			} else if strings.HasPrefix(scenario, "commit-unknown") {
 				wantCommits = 1
 			}
 			if commits != wantCommits || releases != wantReleases || deletes != wantDeletes {
@@ -187,6 +193,36 @@ func TestLeasePush(t *testing.T) {
 			if wantCommits != 0 && !bytes.Contains(committed, []byte("repo/bundles_"+tip)) {
 				t.Fatalf("wrong published metadata: %s", committed)
 			}
+			var messages []string
+			if strings.HasPrefix(scenario, "commit-unknown") {
+				messages = append(messages, "write outcome unknown", "response lost")
+			}
+			if strings.HasPrefix(scenario, "branch-failure") {
+				messages = append(messages, "you cannot have multiple branches in a remote")
+			}
+			if strings.HasSuffix(scenario, "release-failure") {
+				messages = append(messages, "release repository lease", "release rejected")
+			}
+			for _, message := range messages {
+				if !bytes.Contains(output, []byte(message)) {
+					t.Errorf("CLI lost error %q:\n%s", message, output)
+				}
+			}
 		})
 	}
+}
+
+func testHelperCommand(t *testing.T, dir, endpoint, timeout string) *exec.Cmd {
+	t.Helper()
+	child := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestLeasePush$", "-test.timeout="+timeout)
+	child.WaitDelay = time.Second
+	child.Dir = dir
+	child.Env = append(os.Environ(),
+		"GIT_REMOTE_AWS_PUSH_CHILD=1", "GIT_DIR=.git", "ensure=",
+		"AWS_ACCESS_KEY_ID=test", "AWS_SECRET_ACCESS_KEY=test", "AWS_SESSION_TOKEN=",
+		"AWS_REGION=us-east-1", "AWS_DEFAULT_REGION=us-east-1", "AWS_EC2_METADATA_DISABLED=true",
+		"AWS_CONFIG_FILE=/dev/null", "AWS_SHARED_CREDENTIALS_FILE=/dev/null", "AWS_PROFILE=",
+		"AWS_ENDPOINT_URL_DYNAMODB="+endpoint, "AWS_ENDPOINT_URL_S3="+endpoint,
+	)
+	return child
 }

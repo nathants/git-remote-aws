@@ -67,7 +67,7 @@ func TestEncryptionCanceledBeforeStartAndRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	var plaintext bytes.Buffer
-	ring := secretKey("")
+	ring := secretKey(t.Context(), "")
 	if err := ring.Decrypt(&ciphertext, &plaintext); err != nil || plaintext.String() != "plaintext" {
 		t.Fatalf("encrypted format changed: %v", err)
 	}
@@ -111,5 +111,23 @@ func TestEncryptionCancellationInterruptsBlockedWrite(t *testing.T) {
 		_ = r.Close()
 		<-done
 		t.Fatal("encryption kept writing after lease loss")
+	}
+}
+
+func TestEncryptionFetchCancellationAndRoundTrip(t *testing.T) {
+	setupEphemeralKeys(t)
+	ring := secretKey(t.Context(), "")
+	var ciphertext bytes.Buffer
+	if err := encryptPushBundle(t.Context(), publicKey(), io.NopCloser(strings.NewReader("plaintext")), encryptionWriter{&ciphertext}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	var plaintext bytes.Buffer
+	if err := decryptFetchBundle(ctx, ring, io.NopCloser(bytes.NewReader(ciphertext.Bytes())), encryptionWriter{&plaintext}); !errors.Is(err, context.Canceled) || plaintext.Len() != 0 {
+		t.Fatalf("canceled decryption wrote data: %v (%d bytes)", err, plaintext.Len())
+	}
+	if err := decryptFetchBundle(t.Context(), ring, io.NopCloser(&ciphertext), encryptionWriter{&plaintext}); err != nil || plaintext.String() != "plaintext" {
+		t.Fatalf("fetch decryption changed: %v", err)
 	}
 }

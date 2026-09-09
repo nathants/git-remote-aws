@@ -11,13 +11,18 @@ lease-format table cutover before changing storage or push behavior.
 - Pass the configured DynamoDB client explicitly. Use the lease context for
   protected requests, all push Git commands, and encryption. Commit metadata only
   after both S3 uploads succeed. Deferred cleanup must use bounded, independent `Release`,
-  never write the possibly modified payload. Commit cancels the lease context;
-  post-commit S3 cleanup cannot reuse that context. Ambiguous commits must not
-  trigger another payload write or deletion of the previous manifest.
+  never write the possibly modified payload. Commit cancels the lease context.
+  Ambiguous commits must not trigger another payload write or deletion of the
+  previous manifest. A release failure must preserve the original push error,
+  including commit ambiguity.
+- The helper owns one SIGINT/SIGTERM context across initialization and the
+  protocol loop, including idle input waits. Pass it through list/fetch/push;
+  push's lease context remains the authority for protected work. Post-commit S3
+  cleanup uses the helper context, not the canceled lease context.
 - `gitCommand` puts Git in its own process group, kills descendants on
   cancellation, and bounds inherited-pipe waits. Do not replace it with bare
-  `exec.CommandContext`. Encryption keeps the shared codec but checks context
-  between chunks and closes its owned streams to interrupt blocked I/O.
+  `exec.CommandContext`. Bundle encryption and decryption keep the shared codecs
+  but check context between chunks and close owned streams to interrupt blocked I/O.
 - All clients must stop for a lease-format migration and upgrade before resuming.
   `migration.go` implements the read-only-by-default `--migrate-dynamolock`
   command, not a helper fallback. It scopes by account/table/bucket, backs up original
@@ -44,7 +49,11 @@ lease-format table cutover before changing storage or push behavior.
   at production or go-dynamolock's reusable test table. Remove scratch resources
   after confirming test cleanup.
 - Test helpers build into `t.TempDir()`, never over the installed helper. This
-  is essential during incompatible table cutovers.
+  is essential during incompatible table cutovers. Lease error tests execute
+  `main`, including CLI recovery, so cleanup cannot silently replace the primary error.
+- OS-signal tests must not stop child process groups with SIGSTOP: Linux sends
+  SIGHUP to stopped orphaned groups, which can mask missing helper cancellation.
+  Lease-context cancellation tests that keep the helper alive are different.
 - `TestDynamolockMigration` runs the actual migration CLI and then reads, acquires,
   and commits with the new library against AWS. The stale-preimage test submits
   actual migration writes after changed payload/ownership, deletion, and competing

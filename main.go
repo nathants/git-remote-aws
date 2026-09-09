@@ -4,13 +4,16 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -135,7 +138,7 @@ func gitBranchContains(ctx context.Context, branch, hash string) (bool, bool) {
 }
 
 // git helper push
-func push(table, bucket, prefix, command string) {
+func push(requestCtx context.Context, table, bucket, prefix, command string) {
 
 	// parse args and assert single branch
 	refs := strings.SplitN(command[len("push "):], ":", 2)
@@ -153,7 +156,7 @@ func push(table, bucket, prefix, command string) {
 
 	// Cleanup releases ownership only; failed pushes must never publish metadata.
 	fmt.Fprintln(os.Stderr, "get dynamodb://"+table+"/"+bucket+"/"+prefix)
-	lockCtx, cancelLock := context.WithCancel(context.Background())
+	lockCtx, cancelLock := context.WithCancel(requestCtx)
 	defer cancelLock()
 	lease, repoMeta, err := dynamolock.Lock[RepoMeta](lockCtx, lib.DynamoDBClient(), &dynamolock.LockInput{
 		Table:             table,
@@ -168,7 +171,16 @@ func push(table, bucket, prefix, command string) {
 		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := lease.Release(cleanup); err != nil {
-			panic(fmt.Errorf("release repository lease: %w", err))
+			err = fmt.Errorf("release repository lease: %w", err)
+			// Cleanup must not hide the push failure, especially an ambiguous commit.
+			if value := recover(); value != nil {
+				original, ok := value.(error)
+				if !ok {
+					original = fmt.Errorf("%v", value)
+				}
+				err = errors.Join(original, err)
+			}
+			panic(err)
 		}
 	}()
 	ctx := lease.Context()
@@ -320,9 +332,9 @@ func push(table, bucket, prefix, command string) {
 	}
 	fmt.Fprintln(os.Stderr, "put dynamodb://"+table+"/"+bucket+"/"+prefix, repoMeta)
 
-	// delete previous bundles metadata when a new one is written
+	// Commit cancels the lease context; cleanup still follows request cancellation.
 	if oldBundlesS3Key != repoMeta.BundlesS3Key && oldBundlesS3Key != "" {
-		_, err = lib.S3Client().DeleteObject(context.Background(), &s3.DeleteObjectInput{
+		_, err = lib.S3Client().DeleteObject(requestCtx, &s3.DeleteObjectInput{
 			Bucket: aws.String(bucket),
 			Key:    aws.String(oldBundlesS3Key),
 		})
@@ -336,8 +348,8 @@ func push(table, bucket, prefix, command string) {
 	fmt.Println("")
 }
 
-func secretKey(remotePath string) *libsodium.Keyring {
-	ring, err := keysource.Load(context.Background(), remotePath)
+func secretKey(ctx context.Context, remotePath string) *libsodium.Keyring {
+	ring, err := keysource.Load(ctx, remotePath)
 	if err != nil {
 		panic(err)
 	}
@@ -357,7 +369,7 @@ func publicKey() [][]byte {
 }
 
 // git helper fetch
-func fetch(table, bucket, prefix, remotePath, command string) {
+func fetch(ctx context.Context, table, bucket, prefix, remotePath, command string) {
 
 	// parse args to get branch name
 	parts := strings.SplitN(command[len("fetch "):], " ", 2) // fetch $shasum refs/heads/$branch
@@ -365,7 +377,7 @@ func fetch(table, bucket, prefix, remotePath, command string) {
 	branch := refBranch(ref)
 
 	fmt.Fprintln(os.Stderr, "get dynamodb://"+table+"/"+bucket+"/"+prefix)
-	repoMeta, err := dynamolock.Read[RepoMeta](context.Background(), lib.DynamoDBClient(), table, bucket+"/"+prefix)
+	repoMeta, err := dynamolock.Read[RepoMeta](ctx, lib.DynamoDBClient(), table, bucket+"/"+prefix)
 	if err != nil {
 		panic(err)
 	}
@@ -386,7 +398,7 @@ func fetch(table, bucket, prefix, remotePath, command string) {
 	// fetch remote bundles metadata
 	var bundles []string
 	if repoMeta.BundlesS3Key != "" {
-		bundles = getBundles(context.Background(), bucket, repoMeta.BundlesS3Key)
+		bundles = getBundles(ctx, bucket, repoMeta.BundlesS3Key)
 	}
 
 	// walk backward from newest to oldest through remote bundles.
@@ -395,7 +407,7 @@ func fetch(table, bucket, prefix, remotePath, command string) {
 	var bundlesToFetch []string
 	for _, bundle := range reverse(bundles) {
 		hash := hashEnd(bundle)
-		contains, known := gitBranchContains(context.Background(), branch, hash)
+		contains, known := gitBranchContains(ctx, branch, hash)
 		if known && contains {
 			break
 		}
@@ -416,7 +428,7 @@ func fetch(table, bucket, prefix, remotePath, command string) {
 
 		// fetch object
 		fmt.Fprintln(os.Stderr, "get s3://"+bucket+"/"+prefix+"/"+bundle)
-		out, err := lib.S3Client().GetObject(context.Background(), &s3.GetObjectInput{
+		out, err := lib.S3Client().GetObject(ctx, &s3.GetObjectInput{
 			Bucket: aws.String(bucket),
 			Key:    aws.String(prefix + "/" + bundle),
 		})
@@ -454,9 +466,9 @@ func fetch(table, bucket, prefix, remotePath, command string) {
 			panic(err)
 		}
 		if ring == nil {
-			ring = secretKey(remotePath)
+			ring = secretKey(ctx, remotePath)
 		}
-		err = ring.Decrypt(r, w)
+		err = decryptFetchBundle(ctx, ring, r, w)
 		closeReadErr := r.Close()
 		closeWriteErr := w.Close()
 		if err != nil {
@@ -471,7 +483,7 @@ func fetch(table, bucket, prefix, remotePath, command string) {
 
 		// import
 		fmt.Fprintln(os.Stderr, "git unbundle:", path.Base(bundleFileEncrypted))
-		cmd := exec.Command("git", "bundle", "unbundle", bundleFile)
+		cmd := gitCommand(ctx, "bundle", "unbundle", bundleFile)
 		var bundleStdout bytes.Buffer
 		var bundleStderr bytes.Buffer
 		cmd.Stderr = &bundleStderr
@@ -500,10 +512,10 @@ func fetch(table, bucket, prefix, remotePath, command string) {
 }
 
 // git helper list
-func list(table, bucket, prefix string) {
+func list(ctx context.Context, table, bucket, prefix string) {
 
 	fmt.Fprintln(os.Stderr, "get dynamodb://"+table+"/"+bucket+"/"+prefix)
-	repoMeta, err := dynamolock.Read[RepoMeta](context.Background(), lib.DynamoDBClient(), table, bucket+"/"+prefix)
+	repoMeta, err := dynamolock.Read[RepoMeta](ctx, lib.DynamoDBClient(), table, bucket+"/"+prefix)
 	if err != nil {
 		panic(err)
 	}
@@ -522,7 +534,7 @@ func list(table, bucket, prefix string) {
 	// fetch remote bundles metadata
 	var remoteBundles []string
 	if repoMeta != nil && repoMeta.BundlesS3Key != "" {
-		remoteBundles = getBundles(context.Background(), bucket, repoMeta.BundlesS3Key)
+		remoteBundles = getBundles(ctx, bucket, repoMeta.BundlesS3Key)
 	}
 
 	// communicate with git caller
@@ -537,7 +549,7 @@ func list(table, bucket, prefix string) {
 	} else {
 		// else print the zero hash
 		var stdout bytes.Buffer
-		cmd := exec.Command("git", "config", "extensions.objectformat")
+		cmd := gitCommand(ctx, "config", "extensions.objectformat")
 		cmd.Stdout = &stdout
 		err := cmd.Run()
 		objectFormat := ""
@@ -554,6 +566,8 @@ func list(table, bucket, prefix string) {
 }
 
 func gitHelper() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	// parse remote path to get bucket and prefix
 	// remoteName := os.Args[1]
@@ -584,8 +598,11 @@ func gitHelper() {
 	ensure := os.Getenv("ensure") == "y"
 
 	// create bucket if needed
-	_, err = lib.S3BucketRegion(context.Background(), bucket)
+	_, err = lib.S3BucketRegion(ctx, bucket)
 	if err != nil {
+		if ctx.Err() != nil {
+			panic(context.Cause(ctx))
+		}
 		if !ensure {
 			fmt.Fprintln(os.Stderr, "fatal: bucket did not exist and ensure=y env var not provided:", bucket)
 			os.Exit(1)
@@ -595,7 +612,7 @@ func gitHelper() {
 		if err != nil {
 			panic(err)
 		}
-		err = lib.S3Ensure(context.Background(), input, false)
+		err = lib.S3Ensure(ctx, input, false)
 		if err != nil {
 			panic(err)
 		}
@@ -603,10 +620,13 @@ func gitHelper() {
 	}
 
 	// create table if needed
-	_, err = lib.DynamoDBClient().DescribeTable(context.Background(), &dynamodb.DescribeTableInput{
+	_, err = lib.DynamoDBClient().DescribeTable(ctx, &dynamodb.DescribeTableInput{
 		TableName: aws.String(table),
 	})
 	if err != nil {
+		if ctx.Err() != nil {
+			panic(context.Cause(ctx))
+		}
 		if !ensure {
 			fmt.Fprintln(os.Stderr, "fatal: dynamodb table did not exist and ensure=y env var not provided:", table)
 			os.Exit(1)
@@ -616,55 +636,85 @@ func gitHelper() {
 		if err != nil {
 			panic(err)
 		}
-		err = lib.DynamoDBEnsure(context.Background(), input, ttl, false)
+		err = lib.DynamoDBEnsure(ctx, input, ttl, false)
 		if err != nil {
 			panic(err)
 		}
-		err = lib.DynamoDBWaitForReady(context.Background(), table)
+		err = lib.DynamoDBWaitForReady(ctx, table)
 		if err != nil {
 			panic(err)
 		}
 		fmt.Fprintln(os.Stderr, "created private dynamodb table:", table)
 	}
 
-	// read stdin and invoke git remote helpers
-	r := bufio.NewReader(os.Stdin)
-	for {
-
-		// read line
-		command, err := r.ReadString('\n')
-		if err != nil {
-			if err == io.EOF {
-				os.Exit(1)
+	// Protocol stdin belongs to this CLI and can block indefinitely between
+	// commands. Read it separately so a signal can end the helper while idle.
+	type line struct {
+		command string
+		err     error
+	}
+	commands := make(chan line)
+	go func() {
+		defer close(commands)
+		r := bufio.NewReader(os.Stdin)
+		for {
+			command, err := r.ReadString('\n')
+			select {
+			case commands <- line{command, err}:
+			case <-ctx.Done():
+				return
 			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	for {
+		var input line
+		select {
+		case <-ctx.Done():
+			panic(context.Cause(ctx))
+		case input = <-commands:
+		}
+		if err := ctx.Err(); err != nil {
 			panic(err)
 		}
-		command = strings.TrimRight(command, "\n")
-
-		// invoke git remote helper
-		if command == "capabilities" {
-			capabilities()
-		} else if command == "list for-push" || command == "list" {
-			// Git may decide the remote is up to date without issuing push.
-			// Read-only discovery must remain available with local edits.
-			if command == "list for-push" {
-				if err := requireCommittedRecipients(context.Background(), "HEAD"); err != nil {
-					panic(err)
-				}
+		if input.err != nil {
+			if input.err == io.EOF {
+				os.Exit(1)
 			}
-			list(table, bucket, prefix)
-		} else if strings.HasPrefix(command, "push ") {
-			push(table, bucket, prefix, command)
-		} else if strings.HasPrefix(command, "fetch ") {
-			fetch(table, bucket, prefix, remotePath, command)
-		} else if command == "" {
-			os.Exit(0)
-		} else {
-			panic(fmt.Sprintf("%#v", command))
+			panic(input.err)
 		}
-
+		command := strings.TrimRight(input.command, "\n")
+		if command == "" {
+			return
+		}
+		helperCommand(ctx, table, bucket, prefix, remotePath, command)
 	}
+}
 
+func helperCommand(ctx context.Context, table, bucket, prefix, remotePath, command string) {
+	if command == "capabilities" {
+		capabilities()
+	} else if command == "list for-push" || command == "list" {
+		// Git may decide the remote is up to date without issuing push.
+		// Read-only discovery must remain available with local edits.
+		if command == "list for-push" {
+			if err := requireCommittedRecipients(ctx, "HEAD"); err != nil {
+				panic(err)
+			}
+		}
+		list(ctx, table, bucket, prefix)
+	} else if strings.HasPrefix(command, "push ") {
+		push(ctx, table, bucket, prefix, command)
+	} else if strings.HasPrefix(command, "fetch ") {
+		fetch(ctx, table, bucket, prefix, remotePath, command)
+	} else {
+		panic(fmt.Sprintf("%#v", command))
+	}
+	if err := ctx.Err(); err != nil {
+		panic(err)
+	}
 }
 
 func usage() {
@@ -746,7 +796,7 @@ func encrypt() {
 }
 
 func decrypt() {
-	err := secretKey("").Decrypt(os.Stdin, os.Stdout)
+	err := secretKey(context.Background(), "").Decrypt(os.Stdin, os.Stdout)
 	if err != nil {
 		panic(err)
 	}
