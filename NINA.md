@@ -31,6 +31,9 @@ lease-format table cutover before changing storage or push behavior.
   reads, never scans. It does not modify S3.
 - Force pushes, multiple remote branches, and uncommitted recipient changes
   remain forbidden. Preserve SHA-1/SHA-256 and historical encrypted bundles.
+- Push/fetch branch refs use native `git check-ref-format --branch` through the
+  cancelable Git runner. Valid slash names are supported; the returned name must
+  equal the literal input so checkout expressions such as `@{-1}` cannot expand.
 
 ## Validation
 

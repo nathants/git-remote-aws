@@ -1,8 +1,9 @@
 # Git-Remote-AWS
 
 Encrypted Git hosting in S3, with DynamoDB compare-and-swap for concurrent pushes.
-Each remote has one branch; force pushes are forbidden. SHA-1 and SHA-256 Git
-repositories and existing encrypted histories remain readable.
+Each remote has one branch; force pushes are forbidden. Valid Git branch names
+including `archive/home` are supported. SHA-1 and SHA-256 Git repositories and
+existing encrypted histories remain readable.
 
 Git bundles use Libsodium secretstream encryption and box recipient keys. Branch
 names, remote names, and bundle boundary commit IDs are unencrypted. Encryption

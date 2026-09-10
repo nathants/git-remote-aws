@@ -109,13 +109,19 @@ type RepoMeta struct {
 	Branch       string `json:"branch" dynamodbav:"branch"`
 }
 
-func refBranch(ref string) string {
+func refBranch(ctx context.Context, ref string) string {
 	branch, ok := strings.CutPrefix(ref, "refs/heads/")
 	if !ok {
-		panic("ref is not a branch: " + ref)
+		panic(fmt.Errorf("ref is not a branch: %q", ref))
 	}
-	if branch == "" || strings.Contains(branch, "/") {
-		panic("branch names cannot be empty or contain slashes: " + branch)
+	output, err := gitCommand(ctx, "check-ref-format", "--branch", branch).Output()
+	if err != nil {
+		panic(fmt.Errorf("invalid branch %q: %w", branch, err))
+	}
+	// --branch can expand @{-n} through the local checkout reflog. The helper
+	// protocol requires a literal ref, never a context-dependent expression.
+	if string(output) != branch+"\n" {
+		panic(fmt.Errorf("invalid branch %q: expected a literal branch name", branch))
 	}
 	return branch
 }
@@ -147,8 +153,8 @@ func push(requestCtx context.Context, table, bucket, prefix, command string) {
 	if strings.HasPrefix(localRef, "+") || strings.HasPrefix(remoteRef, "+") {
 		panic("force push is not allowed")
 	}
-	localBranch := refBranch(localRef)
-	remoteBranch := refBranch(remoteRef)
+	localBranch := refBranch(requestCtx, localRef)
+	remoteBranch := refBranch(requestCtx, remoteRef)
 	if localBranch != remoteBranch {
 		panic(fmt.Sprintf("local branch is different from remote branch, %s != %s", localBranch, remoteBranch))
 	}
@@ -374,7 +380,7 @@ func fetch(ctx context.Context, table, bucket, prefix, remotePath, command strin
 	// parse args to get branch name
 	parts := strings.SplitN(command[len("fetch "):], " ", 2) // fetch $shasum refs/heads/$branch
 	ref := parts[1]                                          // refs/heads/master
-	branch := refBranch(ref)
+	branch := refBranch(ctx, ref)
 
 	fmt.Fprintln(os.Stderr, "get dynamodb://"+table+"/"+bucket+"/"+prefix)
 	repoMeta, err := dynamolock.Read[RepoMeta](ctx, lib.DynamoDBClient(), table, bucket+"/"+prefix)

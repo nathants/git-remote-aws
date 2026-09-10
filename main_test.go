@@ -365,14 +365,25 @@ func TestBundleNamesFromMetadata(t *testing.T) {
 }
 
 func TestRefBranch(t *testing.T) {
-	if got := refBranch("refs/heads/master"); got != "master" {
-		t.Fatalf("got %s, expected master", got)
+	for _, branch := range []string{"master", "archive/home", "archive/HEAD", "archive/-home", "archive/v1.0"} {
+		t.Run(branch, func(t *testing.T) {
+			defer func() {
+				if value := recover(); value != nil {
+					t.Fatalf("valid branch rejected: %v", value)
+				}
+			}()
+			if got := refBranch(t.Context(), "refs/heads/"+branch); got != branch {
+				t.Fatalf("branch changed: %q, want %q", got, branch)
+			}
+		})
 	}
-
-	mustPanicContains(t, "ref is not a branch", func() { refBranch("refs/tags/v1") })
-	mustPanicContains(t, "ref is not a branch", func() { refBranch("HEAD") })
-	mustPanicContains(t, "branch names cannot be empty or contain slashes", func() { refBranch("refs/heads/") })
-	mustPanicContains(t, "branch names cannot be empty or contain slashes", func() { refBranch("refs/heads/feature/slash") })
+	mustPanicContains(t, "ref is not a branch", func() { refBranch(t.Context(), "refs/tags/v1") })
+	mustPanicContains(t, "ref is not a branch", func() { refBranch(t.Context(), "HEAD") })
+	for _, branch := range []string{"", "main.lock", "archive.lock/home", "main.", "archive/.hidden", "archive//home", "archive/../home", "HEAD", "-main", "@{-1}", "main\x00other"} {
+		t.Run("invalid/"+branch, func(t *testing.T) {
+			mustPanicContains(t, "invalid branch", func() { refBranch(t.Context(), "refs/heads/"+branch) })
+		})
+	}
 }
 
 func TestBasic(t *testing.T) {
