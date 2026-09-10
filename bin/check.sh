@@ -1,15 +1,12 @@
 #!/bin/bash
 set -eou pipefail
 
-which staticcheck >/dev/null   || (cd ~ && go install honnef.co/go/tools/cmd/staticcheck@latest)
-which golint      >/dev/null   || (cd ~ && go install golang.org/x/lint/golint@latest)
-which ineffassign >/dev/null   || (cd ~ && go install github.com/gordonklaus/ineffassign@latest)
-which errcheck    >/dev/null   || (cd ~ && go install github.com/kisielk/errcheck@latest)
-which bodyclose   >/dev/null   || (cd ~ && go install github.com/timakin/bodyclose@latest)
-which nargs       >/dev/null   || (cd ~ && go install github.com/alexkohler/nargs/cmd/nargs@latest)
-which go-hasdefault >/dev/null || (cd ~ && go install github.com/nathants/go-hasdefault@latest)
-which go-hasdefer >/dev/null   || (cd ~ && go install github.com/nathants/go-hasdefer@latest)
-which govulncheck >/dev/null || (cd ~ && go install golang.org/x/vuln/cmd/govulncheck@latest)
+for tool in staticcheck golint ineffassign errcheck bodyclose nargs go-hasdefault go-hasdefer govulncheck; do
+    command -v "$tool" >/dev/null || {
+        printf 'missing required check tool: %s\n' "$tool" >&2
+        exit 1
+    }
+done
 
 echo govulncheck
 govulncheck ./...

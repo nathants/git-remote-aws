@@ -56,10 +56,10 @@ lease-format table cutover before changing storage or push behavior.
 
 ## Validation
 
-- Gate: `GOTOOLCHAIN=local bash bin/check.sh`. Its Go analysis tools
-  must already be installed; the existing script installs missing Go tools.
-  Check prerequisites first rather than allowing an unapproved installation. The
-  gate also runs the full cloud-free selection below with race instrumentation.
+- Gate: `GOTOOLCHAIN=local bash bin/check.sh`. All nine Go analysis tools listed
+  in its prerequisite loop must already be on PATH; the script fails before
+  checks when any is missing and never installs tools. The gate also runs the
+  full cloud-free selection below with race instrumentation.
 - Cloud-free tests:
   `GOTOOLCHAIN=local go test -race -count=1 -run '^(TestKey|TestBundle|TestRef|TestEncryption|TestLease|TestMigration)' ./...`.
   Migration unit tests can run separately with
