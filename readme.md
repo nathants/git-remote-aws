@@ -56,7 +56,27 @@ git push -u origin main
 ```
 
 Use `ensure=y git push ...` to create a missing private bucket/table with suitable
-AWS permissions. Otherwise provision them beforehand. Clone and fetch work normally.
+AWS permissions. Otherwise provision them beforehand. Setup uses the AWS SDK
+directly, not the `libaws` library or CLI. Only confirmed absence permits creation;
+permission, transport and other discovery failures remain errors. Existing bucket
+configuration, table schema/billing/TTL, S3 objects and DynamoDB records are not
+converged or migrated. This dependency change requires no data-at-rest migration.
+
+New buckets retain the private public-access block, HTTPS-only policy, default
+SSE-S3 encryption with SSE-C blocked, no versioning or expiration, and the existing
+`libaws.infraset` setup tag. New tables retain on-demand billing and the single
+string partition key `id`, with TTL and streams disabled. Setup does not create
+credentials or change IAM permissions. A failure after bucket creation leaves the
+bucket in place and reports incomplete setup; inspect and finish its configuration
+administratively before use. Retry never deletes/recreates resources or converges
+an already existing bucket. Serialize resource setup: S3's `us-east-1` create API
+can reset an existing owned bucket's ACL, so the helper does not automatically
+retry an uncertain `CreateBucket` response.
+
+AWS shared profiles, credential sources, regions and service endpoint overrides
+use standard SDK v2 resolution. Clients share one loaded configuration per helper
+invocation, retaining the five-attempt request retry policy except for bucket
+creation. Clone and fetch work normally.
 If a concurrent push deletes the bundle list a reader just discovered, list/fetch
 rediscover the current pointer and list, up to three total attempts. Other errors
 and persistent absence still fail. Old lists are not retained indefinitely.

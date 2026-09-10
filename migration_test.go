@@ -15,7 +15,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/nathants/go-dynamolock"
-	"github.com/nathants/libaws/lib"
 )
 
 // Use the exact migration CLI used for production, including its backup and
@@ -23,7 +22,7 @@ import (
 func migrateTestRepository(t *testing.T, table, bucket, prefix string) {
 	t.Helper()
 	args := []string{"--migrate-dynamolock",
-		"--account", os.Getenv("GIT_REMOTE_AWS_TEST_ACCOUNT"), "--region", lib.Region(),
+		"--account", os.Getenv("GIT_REMOTE_AWS_TEST_ACCOUNT"), "--region", testAWSClients().dynamodb.Options().Region,
 		"--table", table, "--bucket", bucket, "--id", bucket + "/" + prefix,
 		"--backup", filepath.Join(t.TempDir(), "metadata.json"), "--apply", "--writers-stopped"}
 	for range 2 {
@@ -37,7 +36,7 @@ func migrateTestRepository(t *testing.T, table, bucket, prefix string) {
 func TestDynamolockMigration(t *testing.T) {
 	table, bucket, prefix := getTestBucketAndTable(t)
 	defer cleanupAws(table, bucket, prefix)
-	client := lib.DynamoDBClient()
+	client := testAWSClients().dynamodb
 	id := bucket + "/" + prefix
 	old := map[string]types.AttributeValue{
 		"id":      &types.AttributeValueMemberS{Value: id},
@@ -104,7 +103,7 @@ func TestDynamolockMigration(t *testing.T) {
 func TestDynamolockMigrationRejectsStalePreimage(t *testing.T) {
 	table, bucket, prefix := getTestBucketAndTable(t)
 	defer cleanupAws(table, bucket, prefix)
-	client := lib.DynamoDBClient()
+	client := testAWSClients().dynamodb
 	for _, scenario := range []string{"payload", "legacy-owner", "lease-owner", "deleted", "migrated"} {
 		t.Run(scenario, func(t *testing.T) {
 			before := migrationItem(t, oldMigrationJSON)

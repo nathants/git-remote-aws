@@ -1,0 +1,21 @@
+{
+  "producer": "3ebf0a3d6d88c1512730c1e63483793e723aca1c",
+  "git_object_format": "sha1",
+  "tip": "0602df5147cec731a3161bf8f0f7460032c44fe1",
+  "public_key": "ca66bf86795e3ba4b98333d5c2856f41ecde7a738e50945d9a21af27aeae5a1f",
+  "test_only_secret_key": "c3831d2a8d47b70d403b63920eb9dedb349579347d2928d463113715586c0352",
+  "dynamodb_data": {
+    "M": {
+      "bundles": {
+        "S": "repo/bundles_0602df5147cec731a3161bf8f0f7460032c44fe1"
+      },
+      "branch": {
+        "S": "archive/home"
+      }
+    }
+  },
+  "s3_objects": {
+    "/bucket/repo/0000000000000000000000000000000000000000..0602df5147cec731a3161bf8f0f7460032c44fe1": "AQAAAJAAAACJ43jH8eVX6Khmi4h24/xJWJrZqztSfA+nUlTU+MTWbmCWNBGJWYHT3wEX/BeQFGlOF0y/ExJR6d4YdPa/K2+MYmQOkrLWLJFEpOWkIK7bzypGth6CJcwM/LzSQV8/tARq83CHpv0QN1KCDvk+0etOReveNf8OIq+nXJSJ9dE2McnhVt7E1GQCnuvJ4nv1DOpNEvNysoOcI9RghnWm6JFAPaFv7xhiil/BAQAA5pCtV+k/+gcvgDYVaPCa+HKPW1PE738Lr78m8w1kyfWV4clIdU0DcVzmgQ4NguMkQgZ/Y0eeyAYeVVGJQNN/slHHCBRYnYwLhuDCOwWQEdl3Ax+0Kxs+8Br0teVT2/OTCQGfqMNVXCZTM9/znBIAm4wvT2t+H7ZFIJHix2M/O7pElTv7cq00w7NSEtd3yrCbBwcNEPGj87WER6lv2ijyOjxzinRvctqsefE3hPTlhQxzyol5votIYSMp3FPMfkY1ECK6EZ2W5St0hv/FcZpObQDE4E2NrCOLqPLoXbJ77vJ/9NXcxEeFKuOKGArR6DDEI1b1NbLVSrLZ790tcxG2NtIhjidIm1Lecr0K6CW6T/1vFhnqabFwWoEbJMeo+3G0VM0eOIJ610VdaZon3LPzU9aS9B7ZlacrIbOian+e7Mm89vZEjL1yQjti6hn2fvTO2BJ7lHQlBDZY0SRPMt7nD9fqWV/eS7JrIxgbu9Rk6rq1NUvDux9ralJk5el3ug3uQI1k4TEkRzrqLPlZj+Jfo8cjphnVp2UI32N8/NYev1LSPXBw6c3bf0Lk67KcvbYpPuHTULQmR2+EnXZ4yNGaGcARAAAAUoV+OhdA9zhvGQXtOlkhHqU=",
+    "/bucket/repo/bundles_0602df5147cec731a3161bf8f0f7460032c44fe1": "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMC4uMDYwMmRmNTE0N2NlYzczMWEzMTYxYmY4ZjBmNzQ2MDAzMmM0NGZlMQ=="
+  }
+}

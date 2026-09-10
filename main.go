@@ -17,13 +17,11 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/nathants/go-dynamolock"
 	"github.com/nathants/go-libsodium"
 	"github.com/nathants/go-libsodium/keysource"
-	"github.com/nathants/libaws/lib"
 )
 
 const (
@@ -77,13 +75,13 @@ func bundleNamesFromMetadata(location string, data []byte) []string {
 	return bundles
 }
 
-func getBundles(ctx context.Context, bucket, s3Key string) ([]string, error) {
+func (clients *awsClients) getBundles(ctx context.Context, bucket, s3Key string) ([]string, error) {
 	if s3Key == "" {
 		return nil, nil
 	}
 	location := "s3://" + bucket + "/" + s3Key
 	fmt.Fprintln(os.Stderr, "get "+location)
-	out, err := lib.S3Client().GetObject(ctx, &s3.GetObjectInput{
+	out, err := clients.s3.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(s3Key),
 	})
@@ -101,7 +99,7 @@ func getBundles(ctx context.Context, bucket, s3Key string) ([]string, error) {
 // A writer can replace the DynamoDB pointer and delete its old list between a
 // reader's two requests. Rediscover the complete pair on that precise absence,
 // not on permission, transport, parsing, or encrypted-bundle failures.
-func readPublishedMetadata(ctx context.Context, table, bucket, prefix string) (*RepoMeta, []string, error) {
+func (clients *awsClients) readPublishedMetadata(ctx context.Context, table, bucket, prefix string) (*RepoMeta, []string, error) {
 	const maximumAttempts = 3
 	var missingErr error
 	var previousBranch string
@@ -110,7 +108,7 @@ func readPublishedMetadata(ctx context.Context, table, bucket, prefix string) (*
 			return nil, nil, err
 		}
 		fmt.Fprintln(os.Stderr, "get dynamodb://"+table+"/"+bucket+"/"+prefix)
-		meta, err := dynamolock.Read[RepoMeta](ctx, lib.DynamoDBClient(), table, bucket+"/"+prefix)
+		meta, err := dynamolock.Read[RepoMeta](ctx, clients.dynamodb, table, bucket+"/"+prefix)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -127,7 +125,7 @@ func readPublishedMetadata(ctx context.Context, table, bucket, prefix string) (*
 				return nil, nil, fmt.Errorf("remote branch changed during metadata rediscovery: %w", missingErr)
 			}
 		}
-		bundles, err := getBundles(ctx, bucket, meta.BundlesS3Key)
+		bundles, err := clients.getBundles(ctx, bucket, meta.BundlesS3Key)
 		if err == nil {
 			return meta, bundles, nil
 		}
@@ -190,7 +188,7 @@ func gitBranchContains(ctx context.Context, branch, hash string) (bool, bool) {
 }
 
 // git helper push
-func push(requestCtx context.Context, table, bucket, prefix, command string) {
+func (clients *awsClients) push(requestCtx context.Context, table, bucket, prefix, command string) {
 
 	// parse args and assert single branch
 	refs := strings.SplitN(command[len("push "):], ":", 2)
@@ -210,7 +208,7 @@ func push(requestCtx context.Context, table, bucket, prefix, command string) {
 	fmt.Fprintln(os.Stderr, "get dynamodb://"+table+"/"+bucket+"/"+prefix)
 	lockCtx, cancelLock := context.WithCancel(requestCtx)
 	defer cancelLock()
-	lease, repoMeta, err := dynamolock.Lock[RepoMeta](lockCtx, lib.DynamoDBClient(), &dynamolock.LockInput{
+	lease, repoMeta, err := dynamolock.Lock[RepoMeta](lockCtx, clients.dynamodb, &dynamolock.LockInput{
 		Table:             table,
 		ID:                bucket + "/" + prefix,
 		HeartbeatMaxAge:   10 * time.Second,
@@ -239,7 +237,7 @@ func push(requestCtx context.Context, table, bucket, prefix, command string) {
 	if repoMeta == nil {
 		repoMeta = &RepoMeta{}
 	}
-	bundles, err := getBundles(ctx, bucket, repoMeta.BundlesS3Key)
+	bundles, err := clients.getBundles(ctx, bucket, repoMeta.BundlesS3Key)
 	if err != nil {
 		panic(err)
 	}
@@ -357,7 +355,7 @@ func push(requestCtx context.Context, table, bucket, prefix, command string) {
 	}
 	defer func() { _ = f.Close() }()
 	fmt.Fprintln(os.Stderr, "put s3://"+bucket+"/"+prefix+"/"+bundleName)
-	_, err = lib.S3Client().PutObject(ctx, &s3.PutObjectInput{
+	_, err = clients.s3.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(prefix + "/" + bundleName),
 		Body:   f,
@@ -372,7 +370,7 @@ func push(requestCtx context.Context, table, bucket, prefix, command string) {
 	oldBundlesS3Key := repoMeta.BundlesS3Key
 	repoMeta.BundlesS3Key = prefix + "/" + "bundles_" + hash
 	fmt.Fprintln(os.Stderr, "put s3://"+bucket+"/"+repoMeta.BundlesS3Key)
-	_, err = lib.S3Client().PutObject(ctx, &s3.PutObjectInput{
+	_, err = clients.s3.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(repoMeta.BundlesS3Key),
 		Body:   bytes.NewReader(bundleData),
@@ -389,7 +387,7 @@ func push(requestCtx context.Context, table, bucket, prefix, command string) {
 
 	// Commit cancels the lease context; cleanup still follows request cancellation.
 	if oldBundlesS3Key != repoMeta.BundlesS3Key && oldBundlesS3Key != "" {
-		_, err = lib.S3Client().DeleteObject(requestCtx, &s3.DeleteObjectInput{
+		_, err = clients.s3.DeleteObject(requestCtx, &s3.DeleteObjectInput{
 			Bucket: aws.String(bucket),
 			Key:    aws.String(oldBundlesS3Key),
 		})
@@ -424,14 +422,14 @@ func publicKey() [][]byte {
 }
 
 // git helper fetch
-func fetch(ctx context.Context, table, bucket, prefix, remotePath, command string) {
+func (clients *awsClients) fetch(ctx context.Context, table, bucket, prefix, remotePath, command string) {
 
 	// parse args to get branch name
 	parts := strings.SplitN(command[len("fetch "):], " ", 2) // fetch $shasum refs/heads/$branch
 	ref := parts[1]                                          // refs/heads/master
 	branch := refBranch(ctx, ref)
 
-	repoMeta, bundles, err := readPublishedMetadata(ctx, table, bucket, prefix)
+	repoMeta, bundles, err := clients.readPublishedMetadata(ctx, table, bucket, prefix)
 	if err != nil {
 		panic(err)
 	}
@@ -471,7 +469,7 @@ func fetch(ctx context.Context, table, bucket, prefix, remotePath, command strin
 
 		// fetch object
 		fmt.Fprintln(os.Stderr, "get s3://"+bucket+"/"+prefix+"/"+bundle)
-		out, err := lib.S3Client().GetObject(ctx, &s3.GetObjectInput{
+		out, err := clients.s3.GetObject(ctx, &s3.GetObjectInput{
 			Bucket: aws.String(bucket),
 			Key:    aws.String(prefix + "/" + bundle),
 		})
@@ -555,9 +553,9 @@ func fetch(ctx context.Context, table, bucket, prefix, remotePath, command strin
 }
 
 // git helper list
-func list(ctx context.Context, table, bucket, prefix string) {
+func (clients *awsClients) list(ctx context.Context, table, bucket, prefix string) {
 
-	repoMeta, remoteBundles, err := readPublishedMetadata(ctx, table, bucket, prefix)
+	repoMeta, remoteBundles, err := clients.readPublishedMetadata(ctx, table, bucket, prefix)
 	if err != nil {
 		panic(err)
 	}
@@ -606,14 +604,14 @@ func gitHelper() {
 	if !strings.HasPrefix(remotePath, "aws://") {
 		panic("missing prefix aws:// " + remotePath)
 	}
-	bucketAndTable, prefix, err := lib.SplitOnce(strings.TrimPrefix(remotePath, "aws://"), "/")
-	if err != nil {
-		panic(err)
+	bucketAndTable, prefix, ok := strings.Cut(strings.TrimPrefix(remotePath, "aws://"), "/")
+	if !ok {
+		panic("remote URL is missing a repository separator")
 	}
 	prefix = strings.TrimSuffix(prefix, "/")
-	bucket, table, err := lib.SplitOnce(bucketAndTable, "+")
-	if err != nil {
-		panic(err)
+	bucket, table, ok := strings.Cut(bucketAndTable, "+")
+	if !ok {
+		panic("remote URL is missing a bucket/table separator")
 	}
 
 	// cd to git root
@@ -621,61 +619,16 @@ func gitHelper() {
 	if gitDir == "" {
 		panic("GIT_DIR")
 	}
-	err = os.Chdir(path.Dir(gitDir))
-	if err != nil {
+	if err := os.Chdir(path.Dir(gitDir)); err != nil {
 		panic(err)
 	}
 
-	ensure := os.Getenv("ensure") == "y"
-
-	// create bucket if needed
-	_, err = lib.S3BucketRegion(ctx, bucket)
+	clients, err := newAWSClients(ctx)
 	if err != nil {
-		if ctx.Err() != nil {
-			panic(context.Cause(ctx))
-		}
-		if !ensure {
-			fmt.Fprintln(os.Stderr, "fatal: bucket did not exist and ensure=y env var not provided:", bucket)
-			os.Exit(1)
-		}
-		fmt.Fprintln(os.Stderr, "creating private s3 bucket:", bucket)
-		input, err := lib.S3EnsureInput("", bucket, []string{"acl=private"})
-		if err != nil {
-			panic(err)
-		}
-		err = lib.S3Ensure(ctx, input, false)
-		if err != nil {
-			panic(err)
-		}
-		fmt.Fprintln(os.Stderr, "created private s3 bucket:", bucket)
+		panic(err)
 	}
-
-	// create table if needed
-	_, err = lib.DynamoDBClient().DescribeTable(ctx, &dynamodb.DescribeTableInput{
-		TableName: aws.String(table),
-	})
-	if err != nil {
-		if ctx.Err() != nil {
-			panic(context.Cause(ctx))
-		}
-		if !ensure {
-			fmt.Fprintln(os.Stderr, "fatal: dynamodb table did not exist and ensure=y env var not provided:", table)
-			os.Exit(1)
-		}
-		fmt.Fprintln(os.Stderr, "creating private dynamodb table:", table)
-		input, ttl, err := lib.DynamoDBEnsureInput("", table, []string{"id:s:hash"}, nil)
-		if err != nil {
-			panic(err)
-		}
-		err = lib.DynamoDBEnsure(ctx, input, ttl, false)
-		if err != nil {
-			panic(err)
-		}
-		err = lib.DynamoDBWaitForReady(ctx, table)
-		if err != nil {
-			panic(err)
-		}
-		fmt.Fprintln(os.Stderr, "created private dynamodb table:", table)
+	if err := clients.ensureResources(ctx, bucket, table, os.Getenv("ensure") == "y"); err != nil {
+		panic(err)
 	}
 
 	// Protocol stdin belongs to this CLI and can block indefinitely between
@@ -720,11 +673,11 @@ func gitHelper() {
 		if command == "" {
 			return
 		}
-		helperCommand(ctx, table, bucket, prefix, remotePath, command)
+		clients.helperCommand(ctx, table, bucket, prefix, remotePath, command)
 	}
 }
 
-func helperCommand(ctx context.Context, table, bucket, prefix, remotePath, command string) {
+func (clients *awsClients) helperCommand(ctx context.Context, table, bucket, prefix, remotePath, command string) {
 	if command == "capabilities" {
 		capabilities()
 	} else if command == "list for-push" || command == "list" {
@@ -735,11 +688,11 @@ func helperCommand(ctx context.Context, table, bucket, prefix, remotePath, comma
 				panic(err)
 			}
 		}
-		list(ctx, table, bucket, prefix)
+		clients.list(ctx, table, bucket, prefix)
 	} else if strings.HasPrefix(command, "push ") {
-		push(ctx, table, bucket, prefix, command)
+		clients.push(ctx, table, bucket, prefix, command)
 	} else if strings.HasPrefix(command, "fetch ") {
-		fetch(ctx, table, bucket, prefix, remotePath, command)
+		clients.fetch(ctx, table, bucket, prefix, remotePath, command)
 	} else {
 		panic(fmt.Sprintf("%#v", command))
 	}

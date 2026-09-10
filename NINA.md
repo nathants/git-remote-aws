@@ -5,6 +5,19 @@ lease-format table cutover before changing storage or push behavior.
 
 ## Storage invariants
 
+- The helper owns concrete AWS SDK S3/DynamoDB/STS clients from one shared-config
+  load, retaining the previous five-attempt request policy. It has no `libaws`
+  dependency. `ensure=y` creates only confirmed-missing resources; existing
+  resource configuration and records remain unchanged, with no data migration.
+  Anonymous HeadBucket's region-bearing response still establishes existence
+  without requiring list permission. Other discovery errors do not imply absence.
+- Read the setup details in [readme.md](readme.md#usage) before changing `aws.go`.
+  Preserve new-resource security defaults and the existing `libaws.infraset` tag;
+  never copy a general-purpose infrastructure converger into the helper. Setup
+  must be serialized, uncertain CreateBucket is not automatically retried, and
+  interrupted new-bucket configuration needs administrative completion rather
+  than deletion or automatic mutation of a now-existing bucket.
+
 - Repository metadata uses go-dynamolock's envelope: outer string `id` is
   `BUCKET/PREFIX`; `branch` and `bundles` live under `data`. No flat-record
   fallback. The table has only a string partition key `id`, with TTL disabled.

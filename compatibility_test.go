@@ -11,7 +11,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/nathants/go-libsodium"
-	"github.com/nathants/libaws/lib"
 )
 
 // The old binary must be independently built from the pre-keychain implementation
@@ -29,7 +28,7 @@ func TestStoredDataCompatibilityAndRotation(t *testing.T) {
 	for _, objectFormat := range []string{"sha1", "sha256"} {
 		t.Run(objectFormat, func(t *testing.T) {
 			table, bucket, prefix := getTestBucketAndTable(t)
-			if err := lib.DynamoDBWaitForReady(context.Background(), table); err != nil {
+			if err := testAWSClients().waitForTable(context.Background(), table); err != nil {
 				t.Fatal(err)
 			}
 			defer cleanupAws(table, bucket, prefix)
@@ -69,7 +68,7 @@ func TestStoredDataCompatibilityAndRotation(t *testing.T) {
 			oldKeys := listKeys(bucket, prefix)
 			etags := make(map[string]string)
 			for _, name := range oldKeys {
-				out, err := lib.S3Client().HeadObject(context.Background(), &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: aws.String(prefix + "/" + name)})
+				out, err := testAWSClients().s3.HeadObject(context.Background(), &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: aws.String(prefix + "/" + name)})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -136,7 +135,7 @@ func TestStoredDataCompatibilityAndRotation(t *testing.T) {
 				}
 			}
 			for name, want := range etags {
-				out, err := lib.S3Client().HeadObject(context.Background(), &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: aws.String(prefix + "/" + name)})
+				out, err := testAWSClients().s3.HeadObject(context.Background(), &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: aws.String(prefix + "/" + name)})
 				if err != nil || aws.ToString(out.ETag) != want {
 					t.Fatalf("old bundle changed: %s (%v)", name, err)
 				}
@@ -148,7 +147,7 @@ func TestStoredDataCompatibilityAndRotation(t *testing.T) {
 func TestPushNoOpRejectsUncommittedRecipients(t *testing.T) {
 	table, bucket, prefix := getTestBucketAndTable(t)
 	defer cleanupAws(table, bucket, prefix)
-	if err := lib.DynamoDBWaitForReady(context.Background(), table); err != nil {
+	if err := testAWSClients().waitForTable(context.Background(), table); err != nil {
 		t.Fatal(err)
 	}
 	public := setupEphemeralKeys(t)

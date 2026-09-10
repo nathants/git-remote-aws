@@ -302,7 +302,7 @@ func TestBundleRediscoveryScopeAndLimit(t *testing.T) {
 func TestBundleRediscoveryCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	meta, bundles, err := readPublishedMetadata(ctx, "unused-table", "unused-bucket", "unused-repo")
+	meta, bundles, err := (&awsClients{}).readPublishedMetadata(ctx, "unused-table", "unused-bucket", "unused-repo")
 	if !errors.Is(err, context.Canceled) || meta != nil || bundles != nil {
 		t.Fatalf("canceled discovery returned metadata: %+v %v %v", meta, bundles, err)
 	}

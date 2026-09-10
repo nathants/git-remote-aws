@@ -19,10 +19,10 @@ import (
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/gofrs/uuid/v5"
 	"github.com/nathants/go-dynamolock"
 	"github.com/nathants/go-libsodium"
-	"github.com/nathants/libaws/lib"
 )
 
 func runAtResult(dir string, args ...string) (string, string, error) {
@@ -152,16 +152,25 @@ func configureGitIdentity(dir string) {
 	runAt(dir, "git", "config", "user.email", "git-remote-aws-test@example.com")
 }
 
+func testAWSClients() *awsClients {
+	clients, err := newAWSClients(context.Background())
+	if err != nil {
+		panic(err)
+	}
+	return clients
+}
+
 func getTestBucketAndTable(t *testing.T) (string, string, string) {
 	prefix := newUuid()
 	account := os.Getenv("GIT_REMOTE_AWS_TEST_ACCOUNT")
 	if account == "" {
 		panic("GIT_REMOTE_AWS_TEST_ACCOUNT")
 	}
-	acc, err := lib.StsAccount(context.Background())
+	identity, err := testAWSClients().sts.GetCallerIdentity(context.Background(), &sts.GetCallerIdentityInput{})
 	if err != nil {
 		panic(err)
 	}
+	acc := aws.ToString(identity.Account)
 	if account != acc {
 		panic("wrong aws account " + fmt.Sprintf("%s != %s", acc, account))
 	}
@@ -201,7 +210,7 @@ func setCommitDate() {
 }
 
 func cleanupAws(table, bucket, prefix string) {
-	_, err := lib.DynamoDBClient().DeleteItem(context.Background(), &dynamodb.DeleteItemInput{
+	_, err := testAWSClients().dynamodb.DeleteItem(context.Background(), &dynamodb.DeleteItemInput{
 		TableName: aws.String(table),
 		Key: map[string]ddbtypes.AttributeValue{
 			"id": &ddbtypes.AttributeValueMemberS{
@@ -212,7 +221,7 @@ func cleanupAws(table, bucket, prefix string) {
 	if err != nil {
 		panic(err)
 	}
-	out, err := lib.S3Client().ListObjects(context.Background(), &s3.ListObjectsInput{
+	out, err := testAWSClients().s3.ListObjects(context.Background(), &s3.ListObjectsInput{
 		Bucket: aws.String(bucket),
 		Prefix: aws.String(prefix),
 	})
@@ -228,7 +237,7 @@ func cleanupAws(table, bucket, prefix string) {
 	if len(objects) == 0 {
 		return
 	}
-	_, err = lib.S3Client().DeleteObjects(context.Background(), &s3.DeleteObjectsInput{
+	_, err = testAWSClients().s3.DeleteObjects(context.Background(), &s3.DeleteObjectsInput{
 		Bucket: aws.String(bucket),
 		Delete: &s3types.Delete{
 			Objects: objects,
@@ -241,7 +250,7 @@ func cleanupAws(table, bucket, prefix string) {
 
 func listKeys(bucket, prefix string) []string {
 	var got []string
-	out, err := lib.S3Client().ListObjects(context.Background(), &s3.ListObjectsInput{
+	out, err := testAWSClients().s3.ListObjects(context.Background(), &s3.ListObjectsInput{
 		Bucket: aws.String(bucket),
 		Prefix: aws.String(prefix),
 	})
@@ -249,9 +258,9 @@ func listKeys(bucket, prefix string) []string {
 		panic(err)
 	}
 	for _, c := range out.Contents {
-		_, tail, err := lib.SplitOnce(*c.Key, "/")
-		if err != nil {
-			panic(err)
+		_, tail, ok := strings.Cut(*c.Key, "/")
+		if !ok {
+			panic("object key is missing its repository separator")
 		}
 		if strings.Contains(tail, "..") {
 			got = append(got, tail)
@@ -271,9 +280,7 @@ func assertBundleKeys(t *testing.T, bucket, prefix string, expected []string) {
 	want := append([]string{}, expected...)
 	sort.Strings(want)
 	if !reflect.DeepEqual(got, want) {
-		fmt.Println("got:", lib.PformatAlways(got))
-		fmt.Println("expected:", lib.PformatAlways(want))
-		t.Fatal()
+		t.Fatalf("got %v, want %v", got, want)
 	}
 }
 
@@ -281,14 +288,12 @@ func assertLog(t *testing.T, dir string, expected []string) {
 	t.Helper()
 	got := gitLog(dir)
 	if !reflect.DeepEqual(got, expected) {
-		fmt.Println("got:", lib.PformatAlways(got))
-		fmt.Println("expected:", lib.PformatAlways(expected))
-		t.Fatal()
+		t.Fatalf("got %v, want %v", got, expected)
 	}
 }
 
 func getRepoMeta(table, bucket, prefix string) *RepoMeta {
-	repoMeta, err := dynamolock.Read[RepoMeta](context.Background(), lib.DynamoDBClient(), table, bucket+"/"+prefix)
+	repoMeta, err := dynamolock.Read[RepoMeta](context.Background(), testAWSClients().dynamodb, table, bucket+"/"+prefix)
 	if err != nil {
 		panic(err)
 	}
@@ -299,7 +304,7 @@ func getRepoMeta(table, bucket, prefix string) *RepoMeta {
 }
 
 func deleteObject(bucket, key string) {
-	_, err := lib.S3Client().DeleteObject(context.Background(), &s3.DeleteObjectInput{
+	_, err := testAWSClients().s3.DeleteObject(context.Background(), &s3.DeleteObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -309,7 +314,7 @@ func deleteObject(bucket, key string) {
 }
 
 func putObject(bucket, key, body string) {
-	_, err := lib.S3Client().PutObject(context.Background(), &s3.PutObjectInput{
+	_, err := testAWSClients().s3.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 		Body:   strings.NewReader(body),
