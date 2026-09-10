@@ -57,6 +57,9 @@ git push -u origin main
 
 Use `ensure=y git push ...` to create a missing private bucket/table with suitable
 AWS permissions. Otherwise provision them beforehand. Clone and fetch work normally.
+If a concurrent push deletes the bundle list a reader just discovered, list/fetch
+rediscover the current pointer and list, up to three total attempts. Other errors
+and persistent absence still fail. Old lists are not retained indefinitely.
 
 `.publickeys` contains one recipient per line, with rotations joined by colons:
 `old:new:newest`. New bundles use each recipient's newest key from the pushed

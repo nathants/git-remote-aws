@@ -26,7 +26,7 @@ func TestLeasePush(t *testing.T) {
 		main()
 		return
 	}
-	for _, scenario := range []string{"commit", "upload-failure", "commit-unknown", "no-op", "lease-loss", "ancestry-loss", "policy-loss", "recipient-loss", "commit-unknown-release-failure", "branch-failure-release-failure", "no-op-release-failure"} {
+	for _, scenario := range []string{"commit", "upload-failure", "bundles-missing", "commit-unknown", "no-op", "lease-loss", "ancestry-loss", "policy-loss", "recipient-loss", "commit-unknown-release-failure", "branch-failure-release-failure", "no-op-release-failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			public := setupEphemeralKeys(t)
 			dir := t.TempDir()
@@ -143,6 +143,11 @@ func TestLeasePush(t *testing.T) {
 				case http.MethodHead:
 					w.Header().Set("X-Amz-Bucket-Region", "us-east-1")
 				case http.MethodGet:
+					if scenario == "bundles-missing" {
+						w.WriteHeader(http.StatusNotFound)
+						_, _ = io.WriteString(w, `<Error><Code>NoSuchKey</Code></Error>`)
+						return
+					}
 					_, _ = fmt.Fprintf(w, "%s..%s", zeroHash, base)
 				case http.MethodPut:
 					if strings.Contains(r.URL.Path, "/bundles_") {

@@ -3,15 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -29,89 +23,10 @@ func TestRefSlashBranchRoundTrip(t *testing.T) {
 			runAt(dir, "git", "commit", "-qm", "base")
 			base := runAtOut(dir, "git", "rev-parse", "HEAD")
 
-			// Script successful provider responses and retain the actual uploaded
-			// ciphertext for fetch. This does not emulate lease conditions.
-			var mu sync.Mutex
-			data := json.RawMessage(`{"M":{}}`)
-			objects := make(map[string][]byte)
-			commits, uploads := 0, 0
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				body, err := io.ReadAll(r.Body)
-				if err != nil {
-					t.Error(err)
-					w.WriteHeader(http.StatusBadRequest)
-					return
-				}
-				mu.Lock()
-				defer mu.Unlock()
-				if target := r.Header.Get("X-Amz-Target"); target != "" {
-					w.Header().Set("Content-Type", "application/x-amz-json-1.0")
-					switch strings.TrimPrefix(target, "DynamoDB_20120810.") {
-					case "DescribeTable":
-						_, _ = io.WriteString(w, `{"Table":{"TableStatus":"ACTIVE"}}`)
-					case "GetItem":
-						_, _ = fmt.Fprintf(w, `{"Item":{"id":{"S":"bucket/repo"},"data":%s}}`, data)
-					case "UpdateItem":
-						var request struct {
-							UpdateExpression          string
-							ExpressionAttributeValues map[string]json.RawMessage
-						}
-						if err := json.Unmarshal(body, &request); err != nil {
-							t.Error(err)
-							w.WriteHeader(http.StatusBadRequest)
-							return
-						}
-						switch request.UpdateExpression {
-						case "SET #owner = :owner, #expires = :expires":
-							_, _ = fmt.Fprintf(w, `{"Attributes":{"id":{"S":"bucket/repo"},"owner_token":%s,"expires_at":%s,"data":%s}}`, request.ExpressionAttributeValues[":owner"], request.ExpressionAttributeValues[":expires"], data)
-						case "REMOVE #owner, #expires", "SET #expires = :next":
-							_, _ = io.WriteString(w, `{}`)
-						default:
-							next := request.ExpressionAttributeValues[":data"]
-							if next == nil {
-								t.Errorf("unexpected metadata update: %s", body)
-								w.WriteHeader(http.StatusBadRequest)
-								return
-							}
-							data = next
-							commits++
-							_, _ = io.WriteString(w, `{}`)
-						}
-					default:
-						t.Errorf("unexpected DynamoDB operation: %s", target)
-						w.WriteHeader(http.StatusBadRequest)
-					}
-					return
-				}
-				switch r.Method {
-				case http.MethodHead:
-					w.Header().Set("X-Amz-Bucket-Region", "us-east-1")
-				case http.MethodPut:
-					objects[r.URL.Path] = body
-					uploads++
-				case http.MethodGet:
-					body, ok := objects[r.URL.Path]
-					if !ok {
-						t.Errorf("read absent object: %s", r.URL.Path)
-						w.WriteHeader(http.StatusNotFound)
-						return
-					}
-					_, _ = w.Write(body)
-				case http.MethodDelete:
-					delete(objects, r.URL.Path)
-				default:
-					t.Errorf("unexpected S3 method: %s", r.Method)
-					w.WriteHeader(http.StatusBadRequest)
-				}
-			}))
-			defer server.Close()
+			fixture := newMetadataFixture(t)
 			runHelper := func(directory, command string) (string, error) {
 				t.Helper()
-				child := testHelperCommand(t, directory, server.URL, "20s")
-				child.Env = append(child.Env, "AWS_REQUEST_CHECKSUM_CALCULATION=when_required")
-				child.Stdin = strings.NewReader(command + "\n\n")
-				output, err := child.CombinedOutput()
-				return string(output), err
+				return runMetadataHelper(t, directory, fixture.server.URL, command)
 			}
 			push := "push refs/heads/archive/home:refs/heads/archive/home"
 			if output, err := runHelper(dir, push); err != nil {
@@ -153,10 +68,10 @@ func TestRefSlashBranchRoundTrip(t *testing.T) {
 			if got := runAtOut(fresh, "git", "show", tip+":payload"); got != "slash branch payload" {
 				t.Fatalf("fetched wrong content: %q", got)
 			}
-			mu.Lock()
-			defer mu.Unlock()
-			if commits != 2 || uploads != 4 || !bytes.Contains(data, []byte(`"branch":{"S":"archive/home"}`)) {
-				t.Fatalf("wrong published metadata: commits=%d uploads=%d data=%s", commits, uploads, data)
+			fixture.mu.Lock()
+			defer fixture.mu.Unlock()
+			if fixture.commits != 2 || fixture.uploads != 4 || fixture.missing != 0 || !bytes.Contains(fixture.data, []byte(`"branch":{"S":"archive/home"}`)) {
+				t.Fatalf("wrong published metadata: commits=%d uploads=%d missing=%d data=%s", fixture.commits, fixture.uploads, fixture.missing, fixture.data)
 			}
 		})
 	}

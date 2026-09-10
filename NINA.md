@@ -34,6 +34,12 @@ lease-format table cutover before changing storage or push behavior.
 - Push/fetch branch refs use native `git check-ref-format --branch` through the
   cancelable Git runner. Valid slash names are supported; the returned name must
   equal the literal input so checkout expressions such as `@{-1}` cannot expand.
+- Read-only list/fetch discovery reads the DynamoDB pointer and its bundle list
+  together, with at most three discovery attempts. Only the SDK's typed S3
+  `NoSuchKey` for that list triggers rediscovery; a changed branch, lost pointer,
+  other failure, or exhausted budget remains an error. Missing encrypted bundles
+  do not trigger it. Push keeps its lease-protected read, and successful pushes
+  still delete the old cumulative list; no historical-list retention is added.
 
 ## Validation
 

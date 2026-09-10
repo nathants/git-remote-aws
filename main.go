@@ -19,6 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/nathants/go-dynamolock"
 	"github.com/nathants/go-libsodium"
 	"github.com/nathants/go-libsodium/keysource"
@@ -76,9 +77,9 @@ func bundleNamesFromMetadata(location string, data []byte) []string {
 	return bundles
 }
 
-func getBundles(ctx context.Context, bucket, s3Key string) []string {
+func getBundles(ctx context.Context, bucket, s3Key string) ([]string, error) {
 	if s3Key == "" {
-		return nil
+		return nil, nil
 	}
 	location := "s3://" + bucket + "/" + s3Key
 	fmt.Fprintln(os.Stderr, "get "+location)
@@ -87,14 +88,59 @@ func getBundles(ctx context.Context, bucket, s3Key string) []string {
 		Key:    aws.String(s3Key),
 	})
 	if err != nil {
-		panic(fmt.Errorf("failed to get bundles metadata %s: %w", location, err))
+		return nil, fmt.Errorf("failed to get bundles metadata %s: %w", location, err)
 	}
 	defer func() { _ = out.Body.Close() }()
 	data, err := io.ReadAll(out.Body)
 	if err != nil {
-		panic(fmt.Errorf("failed to read bundles metadata %s: %w", location, err))
+		return nil, fmt.Errorf("failed to read bundles metadata %s: %w", location, err)
 	}
-	return bundleNamesFromMetadata(location, data)
+	return bundleNamesFromMetadata(location, data), nil
+}
+
+// A writer can replace the DynamoDB pointer and delete its old list between a
+// reader's two requests. Rediscover the complete pair on that precise absence,
+// not on permission, transport, parsing, or encrypted-bundle failures.
+func readPublishedMetadata(ctx context.Context, table, bucket, prefix string) (*RepoMeta, []string, error) {
+	const maximumAttempts = 3
+	var missingErr error
+	var previousBranch string
+	for attempt := 1; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		fmt.Fprintln(os.Stderr, "get dynamodb://"+table+"/"+bucket+"/"+prefix)
+		meta, err := dynamolock.Read[RepoMeta](ctx, lib.DynamoDBClient(), table, bucket+"/"+prefix)
+		if err != nil {
+			return nil, nil, err
+		}
+		if meta == nil {
+			meta = &RepoMeta{}
+		} else {
+			fmt.Fprintln(os.Stderr, "got meta:", meta)
+		}
+		if missingErr != nil {
+			if meta.BundlesS3Key == "" {
+				return nil, nil, fmt.Errorf("metadata lost its published bundles pointer during rediscovery: %w", missingErr)
+			}
+			if meta.Branch != previousBranch {
+				return nil, nil, fmt.Errorf("remote branch changed during metadata rediscovery: %w", missingErr)
+			}
+		}
+		bundles, err := getBundles(ctx, bucket, meta.BundlesS3Key)
+		if err == nil {
+			return meta, bundles, nil
+		}
+		var missing *s3types.NoSuchKey
+		if !errors.As(err, &missing) {
+			return nil, nil, err
+		}
+		if attempt == maximumAttempts {
+			return nil, nil, fmt.Errorf("metadata discovery exhausted %d attempts: %w", maximumAttempts, err)
+		}
+		missingErr, previousBranch = err, meta.Branch
+		fmt.Fprintln(os.Stderr, "bundle list absent; rediscovering metadata")
+	}
 }
 
 // git helper capabilities
@@ -193,7 +239,10 @@ func push(requestCtx context.Context, table, bucket, prefix, command string) {
 	if repoMeta == nil {
 		repoMeta = &RepoMeta{}
 	}
-	bundles := getBundles(ctx, bucket, repoMeta.BundlesS3Key)
+	bundles, err := getBundles(ctx, bucket, repoMeta.BundlesS3Key)
+	if err != nil {
+		panic(err)
+	}
 
 	if repoMeta.Branch != "" {
 		// assert local branch is the same as remote
@@ -382,15 +431,9 @@ func fetch(ctx context.Context, table, bucket, prefix, remotePath, command strin
 	ref := parts[1]                                          // refs/heads/master
 	branch := refBranch(ctx, ref)
 
-	fmt.Fprintln(os.Stderr, "get dynamodb://"+table+"/"+bucket+"/"+prefix)
-	repoMeta, err := dynamolock.Read[RepoMeta](ctx, lib.DynamoDBClient(), table, bucket+"/"+prefix)
+	repoMeta, bundles, err := readPublishedMetadata(ctx, table, bucket, prefix)
 	if err != nil {
 		panic(err)
-	}
-	if repoMeta == nil {
-		repoMeta = &RepoMeta{}
-	} else {
-		fmt.Fprintln(os.Stderr, "got meta:", repoMeta)
 	}
 
 	// fetch remote branch and fail if it exists and is not equal to local branch
@@ -399,12 +442,6 @@ func fetch(ctx context.Context, table, bucket, prefix, remotePath, command strin
 	}
 	if branch != repoMeta.Branch {
 		panic(fmt.Sprintf("remote branch does not match local branch, %s != %s", branch, repoMeta.Branch))
-	}
-
-	// fetch remote bundles metadata
-	var bundles []string
-	if repoMeta.BundlesS3Key != "" {
-		bundles = getBundles(ctx, bucket, repoMeta.BundlesS3Key)
 	}
 
 	// walk backward from newest to oldest through remote bundles.
@@ -520,27 +557,15 @@ func fetch(ctx context.Context, table, bucket, prefix, remotePath, command strin
 // git helper list
 func list(ctx context.Context, table, bucket, prefix string) {
 
-	fmt.Fprintln(os.Stderr, "get dynamodb://"+table+"/"+bucket+"/"+prefix)
-	repoMeta, err := dynamolock.Read[RepoMeta](ctx, lib.DynamoDBClient(), table, bucket+"/"+prefix)
+	repoMeta, remoteBundles, err := readPublishedMetadata(ctx, table, bucket, prefix)
 	if err != nil {
 		panic(err)
-	}
-	if repoMeta == nil {
-		repoMeta = &RepoMeta{}
-	} else {
-		fmt.Fprintln(os.Stderr, "got meta:", repoMeta)
 	}
 
 	// find remote branch, falling back to default branch
 	branch := defaultBranch
-	if repoMeta != nil && repoMeta.Branch != "" {
+	if repoMeta.Branch != "" {
 		branch = repoMeta.Branch
-	}
-
-	// fetch remote bundles metadata
-	var remoteBundles []string
-	if repoMeta != nil && repoMeta.BundlesS3Key != "" {
-		remoteBundles = getBundles(ctx, bucket, repoMeta.BundlesS3Key)
 	}
 
 	// communicate with git caller
