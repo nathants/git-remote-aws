@@ -233,6 +233,9 @@ func TestLeaseHelperSignals(t *testing.T) {
 					if _, err := os.Stat(filepath.Dir(strings.TrimSpace(string(text)))); !os.IsNotExist(err) {
 						t.Errorf("push temporary files survived cancellation: %v", err)
 					}
+					if refs := runAtOut(dir, "git", "for-each-ref", "refs/git-remote-aws/"); refs != "" {
+						t.Errorf("temporary bundle refs survived cancellation: %s", refs)
+					}
 				}
 				if got := releases.Load(); got != wantReleases {
 					t.Errorf("lease releases = %d, want %d:\n%s", got, wantReleases, stderr.String())

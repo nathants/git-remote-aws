@@ -23,6 +23,7 @@ type metadataFixture struct {
 	mu                        sync.Mutex
 	data                      json.RawMessage
 	objects                   map[string][]byte
+	pushTips                  map[string]string
 	commits, uploads, deletes int
 	reads, missing            int
 	afterRead                 func()
@@ -30,7 +31,7 @@ type metadataFixture struct {
 
 func newMetadataFixture(t *testing.T) *metadataFixture {
 	t.Helper()
-	fixture := &metadataFixture{data: json.RawMessage(`{"M":{}}`), objects: make(map[string][]byte)}
+	fixture := &metadataFixture{data: json.RawMessage(`{"M":{}}`), objects: make(map[string][]byte), pushTips: make(map[string]string)}
 	fixture.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -89,9 +90,22 @@ func newMetadataFixture(t *testing.T) *metadataFixture {
 		}
 		switch r.Method {
 		case http.MethodHead:
-			w.Header().Set("X-Amz-Bucket-Region", "us-east-1")
+			if object, ok := fixture.objects[r.URL.Path]; ok {
+				w.Header().Set("Content-Length", fmt.Sprint(len(object)))
+				w.Header().Set("X-Amz-Meta-Git-Remote-Aws-Push-Tip", fixture.pushTips[r.URL.Path])
+			} else if strings.Count(r.URL.Path, "/") > 1 {
+				w.WriteHeader(http.StatusNotFound)
+			} else {
+				w.Header().Set("X-Amz-Bucket-Region", "us-east-1")
+			}
 		case http.MethodPut:
+			if _, exists := fixture.objects[r.URL.Path]; exists && r.Header.Get("If-None-Match") == "*" {
+				w.WriteHeader(http.StatusPreconditionFailed)
+				_, _ = io.WriteString(w, `<Error><Code>PreconditionFailed</Code></Error>`)
+				return
+			}
 			fixture.objects[r.URL.Path] = body
+			fixture.pushTips[r.URL.Path] = r.Header.Get("X-Amz-Meta-Git-Remote-Aws-Push-Tip")
 			fixture.uploads++
 		case http.MethodGet:
 			body, ok := fixture.objects[r.URL.Path]
@@ -104,6 +118,7 @@ func newMetadataFixture(t *testing.T) *metadataFixture {
 			_, _ = w.Write(body)
 		case http.MethodDelete:
 			delete(fixture.objects, r.URL.Path)
+			delete(fixture.pushTips, r.URL.Path)
 			fixture.deletes++
 		default:
 			t.Errorf("unexpected S3 method: %s", r.Method)

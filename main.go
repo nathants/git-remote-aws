@@ -292,18 +292,7 @@ func (clients *awsClients) push(requestCtx context.Context, table, bucket, prefi
 	}
 	defer func() { _ = os.RemoveAll(tempdir) }()
 
-	// setup bundle name and bundle target. a new remote bundles all
-	// commits. an existing remote bundles all commits since the last
-	// bundle in remote.
-	bundleTarget := localRef
-	bundleName := zeroHash + ".." + hash
-	if len(hash) == 64 {
-		bundleName = zeroHash256 + ".." + hash
-	}
-	if len(bundles) > 0 {
-		bundleTarget = hashEnd(last(bundles)) + ".." + localRef
-		bundleName = hashEnd(last(bundles)) + ".." + hash
-	} else {
+	if base == "" {
 		cmd := gitCommand(ctx, "log", "--format=\"%H%d\"", hash)
 		var stdout bytes.Buffer
 		cmd.Stdout = &stdout
@@ -316,56 +305,26 @@ func (clients *awsClients) push(requestCtx context.Context, table, bucket, prefi
 		}
 	}
 
-	// create bundle
-	bundleFile := tempdir + "/" + bundleName
-	fmt.Fprintln(os.Stderr, "git bundle:", path.Base(bundleFile))
-	if err := createPushBundle(ctx, bundleFile, bundleTarget, hash); err != nil {
+	bundleSize, err := pushBundleSize(ctx)
+	if err != nil {
+		panic(err)
+	}
+	builder := pushBundleBuilder{
+		ctx: ctx, directory: tempdir, target: bundleSize,
+		consume: func(filename string) error {
+			name := path.Base(filename)
+			if err := clients.encryptAndUploadBundle(ctx, bucket, prefix+"/"+name, hash, filename, recipients); err != nil {
+				return err
+			}
+			bundles = append(bundles, name)
+			return nil
+		},
+	}
+	if err := builder.create(base, hash); err != nil {
 		panic(err)
 	}
 
-	// encrypt
-	bundleFileEncrypted := bundleFile + ".encrypted"
-	r, err := os.Open(bundleFile)
-	if err != nil {
-		panic(err)
-	}
-	defer func() { _ = r.Close() }()
-	w, err := os.Create(bundleFileEncrypted)
-	if err != nil {
-		panic(err)
-	}
-	defer func() { _ = w.Close() }()
-	err = encryptPushBundle(ctx, recipients, r, w)
-	if err != nil {
-		panic(err)
-	}
-	err = r.Close()
-	if err != nil {
-		panic(err)
-	}
-	err = w.Close()
-	if err != nil {
-		panic(err)
-	}
-
-	// put bundle to s3
-	f, err := os.Open(bundleFileEncrypted)
-	if err != nil {
-		panic(err)
-	}
-	defer func() { _ = f.Close() }()
-	fmt.Fprintln(os.Stderr, "put s3://"+bucket+"/"+prefix+"/"+bundleName)
-	_, err = clients.s3.PutObject(ctx, &s3.PutObjectInput{
-		Bucket: aws.String(bucket),
-		Key:    aws.String(prefix + "/" + bundleName),
-		Body:   f,
-	})
-	if err != nil {
-		panic(err)
-	}
-
-	// put bundles metadata to s3 and set key in metadata
-	bundles = append(bundles, bundleName)
+	// Publish one cumulative list only after every encrypted bundle is uploaded.
 	bundleData := []byte(strings.Join(bundles, "\n"))
 	oldBundlesS3Key := repoMeta.BundlesS3Key
 	repoMeta.BundlesS3Key = prefix + "/" + "bundles_" + hash

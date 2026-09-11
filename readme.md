@@ -86,6 +86,49 @@ and persistent absence still fail. Old lists are not retained indefinitely.
 commit. Commit recipient edits before pushing; staged or unstaged edits are rejected.
 Rows need not be sorted; blank lines and a missing final newline are allowed.
 
+## Bundle sizing and large pushes
+
+Initial and incremental pushes target **1 GiB per compressed Git bundle**, before
+stream encryption. Override the soft target with a positive byte count; Git's
+binary `k`, `m`, and `g` suffixes are supported:
+
+```sh
+git config remote-aws.bundleSize 1g
+```
+
+The helper estimates object storage before packing, splits large commit ranges,
+and checks actual bundle sizes afterward. Boundaries follow one first-parent
+ancestry chain; a merge brings along all required side history. A single such
+increment can exceed the target, so this is not a hard maximum or exact bin
+packing. Bundles are created, encrypted, uploaded, and removed from temporary
+storage one at a time. Allow temporary disk space for both the plaintext and
+ciphertext of the largest increment. Git must support `rev-list --disk-usage`.
+
+Encrypted files larger than 64 MiB use sequential S3 multipart uploads, normally
+with 64 MiB parts. Part sizes grow for exceptionally large files to stay within
+S3's part-count limit. Retries replay only the affected part, not the entire
+file. Multipart uses the existing `s3:PutObject` permission and additionally
+needs `s3:AbortMultipartUpload` for cleanup. Cancellation and upload failures
+attempt a bounded abort without hiding the original failure. Abrupt process
+termination or an uncertain initiation response can leave incomplete uploads;
+inspect/abort those administratively. The helper does not change bucket lifecycle
+rules or IAM policies.
+
+All bundles in a push use the final pushed commit's recipient policy. The helper
+publishes one complete manifest and commits DynamoDB only after every bundle
+upload succeeds. Existing bundle names, encryption, manifest contents, and the
+DynamoDB data layout remain compatible: **no data migration or historical bundle
+rewrite is needed**. The previous cumulative manifest is still deleted after a
+successful metadata commit.
+
+Upgrade all writers before using split pushes: older helpers do not enforce the
+conditional S3 writes that protect shared intermediate range names. New bundle
+objects record their push tip in S3 user metadata. Retrying that same tip can
+reuse completed objects without replacing ciphertext. An existing range from a
+different or unknown push tip is never overwritten or automatically deleted;
+finish the original push or reconcile the leftover only after confirming it is
+not part of any published history.
+
 ## Upgrade existing tables
 
 The lease-format upgrade is a hard cutover. Stop **all** old and new helpers

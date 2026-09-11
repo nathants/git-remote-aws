@@ -22,9 +22,10 @@ lease-format table cutover before changing storage or push behavior.
   `BUCKET/PREFIX`; `branch` and `bundles` live under `data`. No flat-record
   fallback. The table has only a string partition key `id`, with TTL disabled.
 - Pass the configured DynamoDB client explicitly. Use the lease context for
-  protected requests, all push Git commands, and encryption. Commit metadata only
-  after both S3 uploads succeed. Deferred cleanup must use bounded, independent `Release`,
-  never write the possibly modified payload. Commit cancels the lease context.
+  protected requests, push Git work, and encryption. Commit metadata only after
+  every encrypted bundle and the cumulative list upload succeed. Deferred cleanup
+  must use bounded, independent `Release`, never write the possibly modified
+  payload. Commit cancels the lease context.
   Ambiguous commits must not trigger another payload write or deletion of the
   previous manifest. A release failure must preserve the original push error,
   including commit ambiguity.
@@ -44,6 +45,23 @@ lease-format table cutover before changing storage or push behavior.
   reads, never scans. It does not modify S3.
 - Force pushes, multiple remote branches, and uncommitted recipient changes
   remain forbidden. Preserve SHA-1/SHA-256 and historical encrypted bundles.
+- Read [bundle sizing](readme.md#bundle-sizing-and-large-pushes) before changing
+  `bundle_split.go` or `bundle_upload.go`. Initial and incremental pushes use a
+  1 GiB soft compressed-bundle target (`remote-aws.bundleSize`). Estimate before
+  packing and check actual sizes; keep boundaries on an ancestry chain, including
+  when the remote base is reached through a merge's non-first parent. An
+  indivisible first-parent increment can exceed the target. Only one bundle's
+  temporary plaintext/ciphertext pair is retained at a time. Boundary refs are
+  unique and pinned with conditional Git updates; their bounded, independent
+  cleanup must not move or delete a concurrently changed ref.
+- Multipart upload is transport only: preserve bundle names, codecs, list format,
+  and DynamoDB layout. All bundles use the final push tip's recipient policy.
+  Conditional S3 creation and push-tip object metadata prevent a stale writer
+  from overwriting ciphertext encrypted under another push's policy. Only an
+  exact push-tip match permits reuse; do not backfill old objects or delete
+  conflicting leftovers. Upgrade writers before using split pushes. Abort only
+  the owned multipart upload ID with a bounded independent context; preserve
+  primary errors and never delete a completed object on ambiguous completion.
 - Push/fetch branch refs use native `git check-ref-format --branch` through the
   cancelable Git runner. Valid slash names are supported; the returned name must
   equal the literal input so checkout expressions such as `@{-1}` cannot expand.

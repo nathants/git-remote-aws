@@ -26,7 +26,7 @@ func TestLeasePush(t *testing.T) {
 		main()
 		return
 	}
-	for _, scenario := range []string{"commit", "upload-failure", "bundles-missing", "commit-unknown", "no-op", "lease-loss", "ancestry-loss", "policy-loss", "recipient-loss", "commit-unknown-release-failure", "branch-failure-release-failure", "no-op-release-failure"} {
+	for _, scenario := range []string{"commit", "upload-failure", "bundles-missing", "commit-unknown", "no-op", "lease-loss", "ancestry-loss", "policy-loss", "recipient-loss", "planning-loss", "commit-unknown-release-failure", "branch-failure-release-failure", "no-op-release-failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			public := setupEphemeralKeys(t)
 			dir := t.TempDir()
@@ -43,7 +43,7 @@ func TestLeasePush(t *testing.T) {
 			}
 			tip := runAtOut(dir, "git", "rev-parse", "HEAD")
 			blockedPID := filepath.Join(t.TempDir(), "blocked-pid")
-			command := map[string]string{"ancestry-loss": "merge-base", "policy-loss": "hash-object", "recipient-loss": "cat-file"}[scenario]
+			command := map[string]string{"ancestry-loss": "merge-base", "policy-loss": "hash-object", "recipient-loss": "cat-file", "planning-loss": "rev-list"}[scenario]
 			if command != "" {
 				git, err := exec.LookPath("git")
 				if err != nil {

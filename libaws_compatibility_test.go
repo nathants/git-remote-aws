@@ -137,3 +137,59 @@ func generateLibawsCompatibilityFixture(t *testing.T, objectFormat, destination 
 		t.Fatal(err)
 	}
 }
+
+func TestBundleSizedHistoricalExtension(t *testing.T) {
+	for _, format := range []string{"sha1", "sha256"} {
+		t.Run(format, func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join("testdata", "libaws-"+format+".json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var saved libawsCompatibilityFixture
+			if err := json.Unmarshal(raw, &saved); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("GIT_REMOTE_AWS_SECRETKEY", saved.SecretKey)
+			t.Setenv("GIT_REMOTE_AWS_SECRETKEY_FILE", "")
+			t.Setenv("GIT_REMOTE_AWS_SECRETKEY_CMD", "")
+			fixture := newMetadataFixture(t)
+			fixture.mu.Lock()
+			fixture.data = saved.Data
+			for key, body := range saved.Objects {
+				fixture.objects[key] = append([]byte(nil), body...)
+			}
+			fixture.mu.Unlock()
+			dir := t.TempDir()
+			runAt(dir, "git", "init", "-q", "--object-format="+format, "-b", "archive/home")
+			configureGitIdentity(dir)
+			if output, err := runMetadataHelper(t, dir, fixture.server.URL, "fetch "+saved.Tip+" refs/heads/archive/home"); err != nil {
+				t.Fatalf("fetch historical fixture: %v\n%s", err, output)
+			}
+			runAt(dir, "git", "reset", "--hard", saved.Tip)
+			runAt(dir, "git", "config", "remote-aws.bundleSize", "16k")
+			for i := range 3 {
+				commitBundleData(t, dir, string(rune('a'+i)), 32<<10)
+			}
+			tip := runAtOut(dir, "git", "rev-parse", "HEAD")
+			if output, err := runMetadataHelper(t, dir, fixture.server.URL, "push refs/heads/archive/home:refs/heads/archive/home"); err != nil {
+				t.Fatalf("extend historical fixture with multiple bundles: %v\n%s", err, output)
+			}
+			fixture.mu.Lock()
+			for key, body := range saved.Objects {
+				if !strings.Contains(key, "/bundles_") && !bytes.Equal(fixture.objects[key], body) {
+					t.Errorf("split extension overwrote historical ciphertext: %s", key)
+				}
+			}
+			if fixture.commits != 1 || fixture.uploads < 3 || fixture.deletes != 1 {
+				t.Errorf("split extension changed metadata protocol: commits=%d uploads=%d deletes=%d", fixture.commits, fixture.uploads, fixture.deletes)
+			}
+			fixture.mu.Unlock()
+			clone := t.TempDir()
+			runAt(clone, "git", "init", "-q", "--object-format="+format, "-b", "archive/home")
+			if output, err := runMetadataHelper(t, clone, fixture.server.URL, "fetch "+tip+" refs/heads/archive/home"); err != nil {
+				t.Fatalf("fetch mixed historical and split bundles: %v\n%s", err, output)
+			}
+			assertBundleHistory(t, dir, clone, tip)
+		})
+	}
+}
