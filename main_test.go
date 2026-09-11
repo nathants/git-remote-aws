@@ -558,7 +558,7 @@ func TestFirstPushTagIsBanned(t *testing.T) {
 	assertRunAtErrContains(t, dir, "ref is not a branch", "git", "push", "origin", "v1")
 }
 
-func TestFirstPushBranchWithSlashIsBanned(t *testing.T) {
+func TestFirstPushSlashBranchRoundTrip(t *testing.T) {
 	dir, cleanup := newTempdir()
 	defer cleanup()
 	table, bucket, prefix := getTestBucketAndTable(t)
@@ -577,7 +577,18 @@ func TestFirstPushBranchWithSlashIsBanned(t *testing.T) {
 	runAt(dir, "git", "commit", "-m", "initial commit")
 	runAt(dir, "git", "checkout", "-b", "feature/slash")
 
-	assertRunAtErrContains(t, dir, "branch names cannot be empty or contain slashes", "git", "push", "-u", "origin", "refs/heads/feature/slash:refs/heads/feature/slash")
+	runAt(dir, "git", "push", "-u", "origin", "refs/heads/feature/slash:refs/heads/feature/slash")
+	clone := path.Join(t.TempDir(), "clone")
+	runAt(path.Dir(clone), "git", "clone", "aws://"+bucket+"+"+table+"/"+prefix, clone)
+	if branch := runAtOut(clone, "git", "symbolic-ref", "HEAD"); branch != "refs/heads/feature/slash" {
+		t.Fatalf("clone changed the slash branch: %s", branch)
+	}
+	if tip, want := runAtOut(clone, "git", "rev-parse", "HEAD"), runAtOut(dir, "git", "rev-parse", "HEAD"); tip != want {
+		t.Fatalf("clone changed the pushed tip: got %s, want %s", tip, want)
+	}
+	if data, err := os.ReadFile(path.Join(clone, "bar")); err != nil || string(data) != "foo\n" {
+		t.Fatalf("clone did not check out the pushed content: %q, %v", data, err)
+	}
 }
 
 func TestBranchesAndTagsAreBanned(t *testing.T) {
