@@ -82,7 +82,7 @@ func TestLeaseAWSSetupCreatesOnlyMissingResources(t *testing.T) {
 	for _, scenario := range []struct {
 		name                                string
 		bucketMissing, tableMissing, ensure bool
-		createError, setupError             bool
+		createError, waitError, setupError  bool
 	}{
 		{name: "existing", ensure: true},
 		{name: "missing without ensure", bucketMissing: true, tableMissing: true},
@@ -90,6 +90,7 @@ func TestLeaseAWSSetupCreatesOnlyMissingResources(t *testing.T) {
 		{name: "table only", tableMissing: true, ensure: true},
 		{name: "both", bucketMissing: true, tableMissing: true, ensure: true},
 		{name: "ambiguous bucket create", bucketMissing: true, ensure: true, createError: true},
+		{name: "incomplete bucket readiness", bucketMissing: true, ensure: true, waitError: true},
 		{name: "incomplete bucket setup", bucketMissing: true, ensure: true, setupError: true},
 	} {
 		for _, region := range []string{"us-east-1", "eu-west-1"} {
@@ -149,6 +150,9 @@ func TestLeaseAWSSetupCreatesOnlyMissingResources(t *testing.T) {
 						calls["head"]++
 						if bucketExists {
 							w.Header().Set("X-Amz-Bucket-Region", region)
+							if scenario.waitError {
+								w.WriteHeader(http.StatusForbidden)
+							}
 						} else {
 							w.WriteHeader(http.StatusNotFound)
 						}
@@ -243,9 +247,16 @@ func TestLeaseAWSSetupCreatesOnlyMissingResources(t *testing.T) {
 				child.Env = append(child.Env, "ensure="+ensure, "AWS_REGION="+region, "AWS_DEFAULT_REGION="+region, "AWS_ENDPOINT_URL_STS="+server.URL)
 				child.Stdin = strings.NewReader("capabilities\n\n")
 				output, err := child.CombinedOutput()
-				wantError := !scenario.ensure || scenario.createError || scenario.setupError
+				wantError := !scenario.ensure || scenario.createError || scenario.waitError || scenario.setupError
 				if (err != nil) != wantError {
 					t.Fatalf("setup result: %v\n%s", err, output)
+				}
+				if scenario.waitError || scenario.setupError {
+					for _, message := range []string{"was created but setup is incomplete", "before use", "StatusCode: 403"} {
+						if !strings.Contains(string(output), message) {
+							t.Errorf("post-create failure lost %q: %s", message, output)
+						}
+					}
 				}
 				mu.Lock()
 				defer mu.Unlock()
@@ -262,8 +273,20 @@ func TestLeaseAWSSetupCreatesOnlyMissingResources(t *testing.T) {
 				if !wantError && scenario.tableMissing && calls["CreateTable"] != 1 {
 					t.Errorf("table was not created: %v", calls)
 				}
-				if scenario.createError && calls["publicAccessBlock"] != 0 || scenario.setupError && strings.Contains(string(output), "created private s3 bucket") {
-					t.Errorf("uncertain/incomplete setup was accepted: %v\n%s", calls, output)
+				if scenario.createError || scenario.waitError {
+					for _, operation := range []string{"publicAccessBlock", "encryption", "policy", "tagging", "CreateTable"} {
+						if calls[operation] != 0 {
+							t.Errorf("setup continued after creation/readiness failure: %v\n%s", calls, output)
+						}
+					}
+				}
+				if scenario.waitError || scenario.setupError {
+					if !bucketExists || strings.Contains(string(output), "created private s3 bucket") {
+						t.Errorf("incomplete setup removed the bucket or reported success: %v\n%s", calls, output)
+					}
+				}
+				if scenario.waitError && (calls["head"] != 2 || !strings.Contains(string(output), "HeadBucket")) {
+					t.Errorf("failure did not occur in the post-create waiter: %v\n%s", calls, output)
 				}
 			})
 		}

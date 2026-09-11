@@ -102,12 +102,6 @@ func (clients *awsClients) ensureBucket(ctx context.Context, bucket string, ensu
 	if err != nil {
 		return fmt.Errorf("create S3 bucket %q: %w", bucket, err)
 	}
-	waiter := s3.NewBucketExistsWaiter(clients.s3, func(options *s3.BucketExistsWaiterOptions) {
-		options.MinDelay, options.MaxDelay = 2*time.Second, 2*time.Second
-	})
-	if err := waiter.Wait(ctx, &s3.HeadBucketInput{Bucket: input.Bucket, ExpectedBucketOwner: identity.Account}, 2*time.Minute); err != nil {
-		return fmt.Errorf("wait for new S3 bucket %q: %w", bucket, err)
-	}
 	if err := clients.configureNewBucket(ctx, bucket, identity.Account, caller.Partition); err != nil {
 		return fmt.Errorf("S3 bucket %q was created but setup is incomplete; review its configuration before use: %w", bucket, err)
 	}
@@ -116,6 +110,12 @@ func (clients *awsClients) ensureBucket(ctx context.Context, bucket string, ensu
 }
 
 func (clients *awsClients) configureNewBucket(ctx context.Context, bucket string, account *string, partition string) error {
+	waiter := s3.NewBucketExistsWaiter(clients.s3, func(options *s3.BucketExistsWaiterOptions) {
+		options.MinDelay, options.MaxDelay = 2*time.Second, 2*time.Second
+	})
+	if err := waiter.Wait(ctx, &s3.HeadBucketInput{Bucket: aws.String(bucket), ExpectedBucketOwner: account}, 2*time.Minute); err != nil {
+		return fmt.Errorf("wait for new S3 bucket %q: %w", bucket, err)
+	}
 	_, err := clients.s3.PutPublicAccessBlock(ctx, &s3.PutPublicAccessBlockInput{
 		Bucket: aws.String(bucket), ExpectedBucketOwner: account,
 		PublicAccessBlockConfiguration: &s3types.PublicAccessBlockConfiguration{

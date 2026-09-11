@@ -88,14 +88,14 @@ func TestBundleLibawsRemovalCompatibility(t *testing.T) {
 	}
 }
 
-// Generate only with the recorded pre-removal revision. The checked-in fixtures
-// hold synthetic secrets, actual encrypted bundles and the old DynamoDB payload;
-// ordinary tests consume them without rebuilding a historical helper.
+// Generate only with the retained pre-removal revision documented in testdata.
+// The checked-in fixtures hold synthetic secrets, actual encrypted bundles and
+// the old DynamoDB payload; ordinary tests do not regenerate them.
 func generateLibawsCompatibilityFixture(t *testing.T, objectFormat, destination string) {
 	t.Helper()
 	producer := runAtOut(".", "git", "rev-parse", "HEAD")
-	if !strings.HasPrefix(producer, "3ebf0a3") {
-		t.Fatal("fixture generation requires the pre-libaws-removal helper revision")
+	if producer != "672701aae88116fe04e9e391cf942db1c6066024" {
+		t.Fatal("fixture generation requires the pre-libaws-removal helper revision documented in testdata/README.md")
 	}
 	changed := runAtOut(".", "git", "diff", "--name-only", producer, "--", "*.go", "go.mod", "go.sum")
 	untracked := runAtOut(".", "git", "ls-files", "--others", "--exclude-standard", "--", "*.go", "go.mod", "go.sum")

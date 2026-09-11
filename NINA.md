@@ -14,9 +14,10 @@ lease-format table cutover before changing storage or push behavior.
 - Read the setup details in [readme.md](readme.md#usage) before changing `aws.go`.
   Preserve new-resource security defaults and the existing `libaws.infraset` tag;
   never copy a general-purpose infrastructure converger into the helper. Setup
-  must be serialized, uncertain CreateBucket is not automatically retried, and
-  interrupted new-bucket configuration needs administrative completion rather
-  than deletion or automatic mutation of a now-existing bucket.
+  must be serialized and uncertain CreateBucket is not automatically retried.
+  Every failure after confirmed bucket creation, including the readiness wait,
+  must report incomplete setup requiring administrative completion rather than
+  deletion or automatic mutation of a now-existing bucket.
 
 - Repository metadata uses go-dynamolock's envelope: outer string `id` is
   `BUCKET/PREFIX`; `branch` and `bundles` live under `data`. No flat-record
@@ -88,6 +89,9 @@ lease-format table cutover before changing storage or push behavior.
   disposable, pre-provisioned unversioned bucket/id-keyed table. Never point tests
   at production or go-dynamolock's reusable test table. Remove scratch resources
   after confirming test cleanup.
+- Read [fixture provenance and regeneration](testdata/README.md) before
+  regenerating stored-data compatibility fixtures; use the retained pre-removal
+  producer, never current production code.
 - Test helpers build into `t.TempDir()`, never over the installed helper. This
   is essential during incompatible table cutovers. Lease error tests execute
   `main`, including CLI recovery, so cleanup cannot silently replace the primary error.

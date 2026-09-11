@@ -13,6 +13,17 @@ DynamoDB's condition evaluator; the separate lease tests cover that protocol.
 
 The fixtures were generated before changing production code, using the test-only
 `GIT_REMOTE_AWS_GENERATE_LIBAWS_FIXTURES=1` path. Normal tests never regenerate
-them. Regeneration must use the recorded producer's production sources and
-module graph, with only the compatibility test/generator files overlaid. Do not
-replace them with fixtures produced by the current helper.
+them. For regeneration, use retained revision
+`672701aae88116fe04e9e391cf942db1c6066024`. Its tree
+`b04c68484a051424749c19a14f6183d9d68c26ba` is identical to the original producer's,
+including all production sources and the module graph. The original producer is
+no longer retained by a branch or tag; existing fixtures keep their original
+`producer` values and ciphertext.
+
+In a detached worktree at the retained revision, overlay the fixture type,
+`TestBundleLibawsRemovalCompatibility`, and `generateLibawsCompatibilityFixture`
+from `libaws_compatibility_test.go`. Do not include the later bundle-sizing test
+or change production files or dependencies. Run
+`GIT_REMOTE_AWS_GENERATE_LIBAWS_FIXTURES=1 go test -count=1 -run '^TestBundleLibawsRemovalCompatibility$'`.
+Generated fixtures record the retained revision as their producer. Never replace
+historical fixtures with ones produced by the current helper.
