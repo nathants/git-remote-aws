@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -159,23 +162,80 @@ func createPinnedPushBundle(ctx context.Context, filename, base, tip string) (er
 	}
 	ref := "refs/git-remote-aws/" + id.String()
 	// Git bundle requires a named ref, not a raw object ID. A private ref pins
-	// each boundary without moving the user's branch. Conditional updates and
-	// deletion cannot clobber any concurrent ref edit, even during cleanup.
+	// each boundary without moving the user's branch. Only a confirmed create
+	// grants cleanup ownership; a failed or interrupted create may belong to
+	// another writer, even if its object ID matches.
+	output, err := gitCommand(ctx, "update-ref", "--no-deref", ref, tip, strings.Repeat("0", len(tip))).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("pin Git bundle boundary %s (inspect this ref if creation was interrupted): %w: %s", ref, err, output)
+	}
 	defer func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		output, cleanupErr := gitCommand(cleanup, "update-ref", "--no-deref", "-d", ref, tip).CombinedOutput()
-		if cleanupErr != nil {
-			err = errors.Join(err, fmt.Errorf("remove temporary bundle ref %s: %w: %s", ref, cleanupErr, output))
+		if cleanupErr := removePinnedPushRef(cleanup, ref, tip); cleanupErr != nil {
+			err = errors.Join(err, fmt.Errorf("remove temporary bundle ref %s: %w", ref, cleanupErr))
 		}
 	}()
-	output, err := gitCommand(ctx, "update-ref", "--no-deref", ref, tip, strings.Repeat("0", len(tip))).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("pin Git bundle boundary: %w: %s", err, output)
-	}
 	target := ref
 	if base != "" {
 		target = base + ".." + ref
 	}
 	return createPushBundle(ctx, filename, target, tip)
+}
+
+func removePinnedPushRef(ctx context.Context, ref, tip string) (err error) {
+	// An old-OID guard still follows symbolic refs even with --no-deref. Hold
+	// Git's transaction lock while checking the ref's type, then commit only a
+	// direct ref deletion. Closing stdin without commit aborts the transaction.
+	cmd := gitCommand(ctx, "update-ref", "--no-deref", "--stdin")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	input, err := cmd.StdinPipe()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = input.Close() }()
+	output, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = output.Close() }()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	defer func() {
+		_ = input.Close()
+		if waitErr := cmd.Wait(); waitErr != nil {
+			err = errors.Join(err, fmt.Errorf("run Git ref cleanup transaction: %w: %s", waitErr, stderr.String()))
+		}
+	}()
+	reader := bufio.NewReader(output)
+	exchange := func(command, response string) error {
+		if _, err := io.WriteString(input, command+"\n"); err != nil {
+			return err
+		}
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		if line != response+"\n" {
+			return fmt.Errorf("unexpected Git ref transaction response: %q", line)
+		}
+		return nil
+	}
+	if err := exchange("start", "start: ok"); err != nil {
+		return err
+	}
+	if err := exchange("delete "+ref+" "+tip+"\nprepare", "prepare: ok"); err != nil {
+		return err
+	}
+	symbolic, err := gitCommand(ctx, "symbolic-ref", "--quiet", ref).CombinedOutput()
+	if err == nil {
+		return fmt.Errorf("temporary bundle ref became symbolic: %s", strings.TrimSpace(string(symbolic)))
+	}
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+		return fmt.Errorf("inspect temporary bundle ref type: %w: %s", err, symbolic)
+	}
+	return exchange("commit", "commit: ok")
 }

@@ -54,7 +54,11 @@ lease-format table cutover before changing storage or push behavior.
   indivisible first-parent increment can exceed the target. Only one bundle's
   temporary plaintext/ciphertext pair is retained at a time. Boundary refs are
   unique and pinned with conditional Git updates; their bounded, independent
-  cleanup must not move or delete a concurrently changed ref.
+  cleanup must not move or delete a concurrently changed ref. Only confirmed
+  creation grants cleanup ownership. Prepare the conditional deletion and check
+  that the ref is still direct while holding Git's transaction lock, then commit;
+  an old-OID guard with `--no-deref` alone also accepts symbolic replacements.
+  Interrupted creation can leave a ref whose name is reported for inspection.
 - Multipart upload is transport only: preserve bundle names, codecs, list format,
   and DynamoDB layout. All bundles use the final push tip's recipient policy.
   Conditional S3 creation and push-tip object metadata prevent a stale writer

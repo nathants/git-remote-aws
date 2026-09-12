@@ -104,6 +104,10 @@ packing. Bundles are created, encrypted, uploaded, and removed from temporary
 storage one at a time. Allow temporary disk space for both the plaintext and
 ciphertext of the largest increment. Git must support `rev-list --disk-usage`.
 
+Temporary boundary refs live under `refs/git-remote-aws/`. Cleanup preserves
+concurrent changes. Interrupted creation or failed cleanup can leave a ref; errors
+report its name for administrative inspection before removal.
+
 Encrypted files larger than 64 MiB use sequential S3 multipart uploads, normally
 with 64 MiB parts. Part sizes grow for exceptionally large files to stay within
 S3's part-count limit. Retries replay only the affected part, not the entire
