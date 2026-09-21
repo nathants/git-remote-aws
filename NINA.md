@@ -10,7 +10,8 @@ identity, compatibility, or recovery.
 - The helper owns concrete AWS SDK S3/DynamoDB/STS clients from one shared-config
   load, retaining the previous five-attempt request policy. It has no `libaws`
   dependency. `ensure=y` creates only confirmed-missing resources; existing
-  resource configuration and records remain unchanged, with no data migration.
+  resource configuration and records remain unchanged during discovery, with no
+  data migration. Push versioning preflight is the explicit exception below.
   Anonymous HeadBucket's region-bearing response still establishes existence
   without requiring list permission. Other discovery errors do not imply absence.
 - Read the setup details in [readme.md](readme.md#usage) before changing `aws.go`.
@@ -19,7 +20,13 @@ identity, compatibility, or recovery.
   must be serialized and uncertain CreateBucket is not automatically retried.
   Every failure after confirmed bucket creation, including the readiness wait,
   must report incomplete setup requiring administrative completion rather than
-  deletion or automatic mutation of a now-existing bucket.
+  deletion or general configuration convergence of a now-existing bucket.
+- New buckets enable versioning. Every helper push (including v2/no-op/empty
+  destinations) checks versioning before taking a lease, enables it if absent or
+  suspended, and fails closed on API errors. Successful enablement proceeds
+  immediately, without propagation waits or post-enablement polling. No
+  Object Lock, MFA Delete, expiration, version-aware recovery or production
+  version deletion. List/fetch/recovery do not check or change versioning.
 
 - Repository metadata uses go-dynamolock's envelope: outer string `id` is
   `BUCKET/PREFIX`; `branch` and `bundles` live under `data`. No flat-record
@@ -71,6 +78,12 @@ identity, compatibility, or recovery.
   Upgrade all writers first. Empty destinations adopt compatible existing prefixes;
   existing destinations retain their own chains. Never turn missing DynamoDB
   metadata into permission to rewrite a surviving S3 history.
+- Adoption/promotion deduplicates object inspection within an operation and
+  persists successful envelope checks under Git-resolved metadata
+  `git-remote-aws/validation-v2/`. Every new operation still HEADs distinct objects;
+  cache hits require unchanged endpoint/bucket/key/range/codec/ETag/size. Local
+  corrupt/missing cache is a miss; remote corruption/conflicting descriptors
+  stays fatal. Cache does not replace native ancestry or fetch authentication.
 - Adopted chains must cover the root through the reuse endpoint. Validate native
   Git ancestry, scope, object identities and actual envelope recipients (bounded,
   ETag-conditional range reads). A retained key generation is compatible; unknown
@@ -111,7 +124,8 @@ identity, compatibility, or recovery.
 - Live gate: `GOTOOLCHAIN=local GOFLAGS=-race go test -count=1 -timeout=15m ./...`
   with `GIT_REMOTE_AWS_TEST_ACCOUNT`, `GIT_REMOTE_AWS_TEST_BUCKET`, and
   `GIT_REMOTE_AWS_TEST_TABLE`. Use an independently known scratch account and
-  disposable, pre-provisioned unversioned bucket/id-keyed table. Never point tests
+  disposable, pre-provisioned versioned bucket/id-keyed table. Test cleanup alone
+  permanently deletes owned namespace versions/delete markers. Never point tests
   at production or go-dynamolock's reusable test table. Remove scratch resources
   after confirming test cleanup.
 - Namespace cloud-free coverage uses small real Git bundles, both object formats,

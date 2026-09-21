@@ -60,19 +60,44 @@ Use `ensure=y git push ...` to create a missing private bucket/table with suitab
 AWS permissions. Otherwise provision them beforehand. Setup uses the AWS SDK
 directly, not the `libaws` library or CLI. Only confirmed absence permits creation;
 permission, transport and other discovery failures remain errors. Existing bucket
-configuration, table schema/billing/TTL, S3 objects and DynamoDB records are not
-converged or migrated. This dependency change requires no data-at-rest migration.
+configuration is left unchanged during discovery. Table schema/billing/TTL and
+existing data are not converged or migrated. Push enables bucket versioning as
+described below; this requires no data-at-rest migration.
 
 New buckets retain the private public-access block, HTTPS-only policy, default
-SSE-S3 encryption with SSE-C blocked, no versioning or expiration, and the existing
-`libaws.infraset` setup tag. New tables retain on-demand billing and the single
-string partition key `id`, with TTL and streams disabled. Setup does not create
-credentials or change IAM permissions. A failure after bucket creation leaves the
-bucket in place and reports incomplete setup; inspect and finish its configuration
-administratively before use. Retry never deletes/recreates resources or converges
-an already existing bucket. Serialize resource setup: S3's `us-east-1` create API
-can reset an existing owned bucket's ACL, so the helper does not automatically
-retry an uncertain `CreateBucket` response.
+SSE-S3 encryption with SSE-C blocked, versioning enabled, no expiration, and
+the existing `libaws.infraset` setup tag. New tables retain on-demand billing
+and the single string partition key `id`, with TTL and streams disabled. Setup
+does not create credentials or change IAM permissions. A failure after bucket
+creation leaves the bucket in place and reports incomplete setup; inspect and
+finish its configuration administratively before use. Retry never
+deletes/recreates resources or converges an already existing bucket. Serialize
+resource setup: S3's `us-east-1` create API can reset an existing owned
+bucket's ACL, so the helper does not automatically retry an uncertain
+`CreateBucket` response.
+
+Every helper push checks bucket versioning before acquiring its repository lease,
+including pushes to already-promoted or empty repositories. If unconfigured or
+suspended, it enables versioning; if already enabled, it makes no configuration
+write. This affects the **entire bucket**, not just this repository. Writers need
+`s3:GetBucketVersioning` and, when enablement is needed, `s3:PutBucketVersioning`.
+Failures stop the push before any bundle upload or metadata publication. Clone,
+fetch, list and recovery do not perform this check. Git may omit the helper push
+command when everything is already up to date, so that invocation has no preflight.
+
+After successfully enabling versioning, setup/push proceeds immediately without
+waiting or polling for propagation. S3 may still be propagating the setting and
+can return transient errors during that interval. The helper does not suspend
+versioning, configure Object Lock/MFA Delete, or add expiration rules.
+
+Versioning is an administrative emergency safety net, not enforced retention.
+Normal deletion leaves a delete marker; overwrites retain previous versions.
+Superseded manifests therefore remain stored as historical versions. No bundles
+are copied or re-uploaded. The helper never lists, restores or permanently deletes
+object versions; `--recover` still reads visible objects only. Restore accidentally
+deleted/overwritten objects administratively before cloning or recovering. Keep
+permanent-version-deletion permission out of everyday writer credentials where
+possible; privileged version deletion can still destroy data.
 
 AWS shared profiles, credential sources, regions and service endpoint overrides
 use standard SDK v2 resolution. Clients share one loaded configuration per helper
@@ -226,9 +251,12 @@ GOFLAGS=-race go test -run '^(TestKey|TestBundle|TestRef|TestEncryption|TestLeas
 ```
 
 AWS tests require credentials and `GIT_REMOTE_AWS_TEST_{ACCOUNT,BUCKET,TABLE}`.
-Use a disposable unversioned S3 bucket and DynamoDB table with string partition
-key `id`, never production resources. Tests clean their objects/items; remove the
-bucket/table afterward.
+Use a disposable S3 bucket with versioning enabled and a DynamoDB table with
+string partition key `id`, never production resources. Test-only
+cleanup permanently deletes versions and delete markers within owned UUID
+namespaces. Tests require `s3:ListBucketVersions`, `s3:GetObjectVersion` and
+`s3:DeleteObjectVersion` in addition to helper permissions. Remove the bucket/table
+afterward.
 
 ```sh
 go test ./...

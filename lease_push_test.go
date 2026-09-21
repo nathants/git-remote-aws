@@ -155,7 +155,7 @@ func TestLeasePush(t *testing.T) {
 				switch r.Method {
 				case http.MethodHead:
 				case http.MethodGet:
-					if scenario == "bundles-missing" {
+					if scenario == "bundles-missing" && !r.URL.Query().Has("versioning") {
 						w.WriteHeader(http.StatusNotFound)
 						_, _ = io.WriteString(w, `<Error><Code>NoSuchKey</Code></Error>`)
 						return

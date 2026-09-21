@@ -222,30 +222,33 @@ func cleanupAws(table, bucket, prefix string) {
 	if err != nil {
 		panic(err)
 	}
-	out, err := testAWSClients().s3.ListObjects(context.Background(), &s3.ListObjectsInput{
-		Bucket: aws.String(bucket),
-		Prefix: aws.String(prefix),
-	})
-	if err != nil {
-		panic(err)
+	// Tests own their UUID namespace. Permanently remove only that namespace's
+	// versions and delete markers; production cleanup never uses this operation.
+	client := testAWSClients().s3
+	pages := s3.NewListObjectVersionsPaginator(client, &s3.ListObjectVersionsInput{Bucket: aws.String(bucket), Prefix: aws.String(prefix + "/")})
+	var objects []s3types.ObjectIdentifier
+	for pages.HasMorePages() {
+		out, err := pages.NextPage(context.Background())
+		if err != nil {
+			panic(err)
+		}
+		for _, version := range out.Versions {
+			objects = append(objects, s3types.ObjectIdentifier{Key: version.Key, VersionId: version.VersionId})
+		}
+		for _, marker := range out.DeleteMarkers {
+			objects = append(objects, s3types.ObjectIdentifier{Key: marker.Key, VersionId: marker.VersionId})
+		}
 	}
-	objects := []s3types.ObjectIdentifier{}
-	for _, c := range out.Contents {
-		objects = append(objects, s3types.ObjectIdentifier{
-			Key: c.Key,
-		})
-	}
-	if len(objects) == 0 {
-		return
-	}
-	_, err = testAWSClients().s3.DeleteObjects(context.Background(), &s3.DeleteObjectsInput{
-		Bucket: aws.String(bucket),
-		Delete: &s3types.Delete{
-			Objects: objects,
-		},
-	})
-	if err != nil {
-		panic(err)
+	for len(objects) > 0 {
+		count := min(1000, len(objects))
+		out, err := client.DeleteObjects(context.Background(), &s3.DeleteObjectsInput{Bucket: aws.String(bucket), Delete: &s3types.Delete{Objects: objects[:count]}})
+		if err != nil {
+			panic(err)
+		}
+		if len(out.Errors) != 0 {
+			panic(fmt.Sprintf("test version cleanup failed: %+v", out.Errors))
+		}
+		objects = objects[count:]
 	}
 }
 

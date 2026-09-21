@@ -77,6 +77,16 @@ func TestNamespaceLegacyAdoptionAWS(t *testing.T) {
 	commitBundleData(t, dir, "first new increment", 4<<10)
 	runAt(dir, "git", "push", "origin", "archive/home")
 	first := liveManifest(t, table, bucket, prefix)
+	// Production deletes only the visible old manifest. Versioning must retain
+	// its prior contents behind a delete marker for administrative recovery.
+	versions, err := clients.s3.ListObjectVersions(t.Context(), &s3.ListObjectVersionsInput{Bucket: aws.String(bucket), Prefix: aws.String(listKey)})
+	if err != nil || len(versions.Versions) != 1 || len(versions.DeleteMarkers) != 1 || !aws.ToBool(versions.DeleteMarkers[0].IsLatest) {
+		t.Fatalf("promotion did not retain the old manifest version: %+v %v", versions, err)
+	}
+	old, err := clients.s3.HeadObject(t.Context(), &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: aws.String(listKey), VersionId: versions.Versions[0].VersionId})
+	if err != nil || aws.ToInt64(old.ContentLength) == 0 {
+		t.Fatalf("retained manifest is not accessible: %+v %v", old, err)
+	}
 	if len(first.Bundles) != 2 || first.Bundles[0].Key != prefix+"/"+first.Bundles[0].Range {
 		t.Fatalf("legacy promotion moved or rewrote history: %+v", first)
 	}

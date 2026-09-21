@@ -16,8 +16,10 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awsmiddleware "github.com/aws/aws-sdk-go-v2/aws/middleware"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
 	"github.com/gofrs/uuid/v5"
 	"github.com/nathants/go-dynamolock"
 	"github.com/nathants/go-libsodium"
@@ -245,15 +247,34 @@ func (clients *awsClients) putManifest(ctx context.Context, bucket string, repo 
 // This reads only the box envelope, not the encrypted Git payload. Authentication
 // and complete Git connectivity are checked by the common fetch path.
 func (clients *awsClients) inspectBundle(ctx context.Context, bucket string, ref bundleRef) (bundleRef, error) {
+	ref, _, err := clients.headBundle(ctx, bucket, ref)
+	if err != nil {
+		return ref, err
+	}
+	return clients.readBundleRecipients(ctx, bucket, ref)
+}
+
+func (clients *awsClients) headBundle(ctx context.Context, bucket string, ref bundleRef) (bundleRef, string, error) {
 	out, err := clients.s3.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: aws.String(ref.Key)})
 	if err != nil {
-		return ref, fmt.Errorf("inspect bundle %s: %w", ref.Key, err)
+		return ref, "", fmt.Errorf("inspect bundle %s: %w", ref.Key, err)
 	}
 	size, etag := aws.ToInt64(out.ContentLength), aws.ToString(out.ETag)
 	if size <= 0 || etag == "" || ref.Size != 0 && ref.Size != size || ref.ETag != "" && ref.ETag != etag {
-		return ref, fmt.Errorf("bundle identity changed or is missing: %s", ref.Key)
+		return ref, "", fmt.Errorf("bundle identity changed or is missing: %s", ref.Key)
 	}
 	ref.Size, ref.ETag = size, etag
+	// Scope the cache to the actual resolved S3 request, not just a bucket name.
+	// This also isolates endpoint overrides and custom endpoint resolvers. Without
+	// transport identity, validation still works but persistent caching is disabled.
+	identity := ""
+	if raw, ok := awsmiddleware.GetRawResponse(out.ResultMetadata).(*smithyhttp.Response); ok && raw.Response != nil && raw.Request != nil && raw.Request.URL != nil {
+		identity = bundleValidationIdentity(raw.Request.URL.String(), bucket, ref)
+	}
+	return ref, identity, nil
+}
+
+func (clients *awsClients) readBundleRecipients(ctx context.Context, bucket string, ref bundleRef) (bundleRef, error) {
 	recordedRecipients := ref.Recipients
 	ref.Recipients = nil
 	countBytes, err := clients.bundleHeaderRange(ctx, bucket, ref, 0, 4)
@@ -264,7 +285,7 @@ func (clients *awsClients) inspectBundle(ctx context.Context, bucket string, ref
 	// These are the retained libsodium box-envelope wire constants: 64-byte
 	// BLAKE2b fingerprint, 48-byte sealed-box overhead, 32-byte stream key.
 	const recordSize = 64 + 48 + 32
-	if count == 0 || count > 1<<16 || int64(4+count*(4+recordSize)) >= size {
+	if count == 0 || count > 1<<16 || int64(4+count*(4+recordSize)) >= ref.Size {
 		return ref, fmt.Errorf("invalid encrypted recipient count for %s", ref.Key)
 	}
 	header, err := clients.bundleHeaderRange(ctx, bucket, ref, 4, int64(count)*(4+recordSize))
@@ -323,6 +344,10 @@ func compatibleRecipients(ref bundleRef, chains libsodium.KeyChains) bool {
 }
 
 func (clients *awsClients) validateBundleChain(ctx context.Context, bucket string, refs []bundleRef) ([]bundleRef, error) {
+	return clients.newBundleValidation(ctx, bucket).chain(ctx, refs)
+}
+
+func (validation *bundleValidation) chain(ctx context.Context, refs []bundleRef) ([]bundleRef, error) {
 	refs = slices.Clone(refs)
 	for i, ref := range refs {
 		base, tip, err := validBundleRange(ref.Range)
@@ -338,7 +363,7 @@ func (clients *awsClients) validateBundleChain(ctx context.Context, bucket strin
 				return nil, fmt.Errorf("bundle range is not an ancestry chain: %s", ref.Range)
 			}
 		}
-		refs[i], err = clients.inspectBundle(ctx, bucket, ref)
+		refs[i], err = validation.inspect(ctx, ref)
 		if err != nil {
 			return nil, err
 		}
@@ -391,6 +416,7 @@ func (clients *awsClients) adoptBundles(ctx context.Context, bucket string, repo
 	if err != nil {
 		return nil, fmt.Errorf("discover namespace bundles: %w", err)
 	}
+	validation := clients.newBundleValidation(ctx, bucket)
 	var best []bundleRef
 	bestDistance := int64(-1)
 	for _, key := range keys {
@@ -433,7 +459,7 @@ func (clients *awsClients) adoptBundles(ctx context.Context, bucket string, repo
 		if low == 0 {
 			continue
 		}
-		candidate, err := clients.validateBundleChain(ctx, bucket, m.Bundles[:low])
+		candidate, err := validation.chain(ctx, m.Bundles[:low])
 		if err != nil {
 			return nil, err
 		}

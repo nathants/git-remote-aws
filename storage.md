@@ -79,6 +79,19 @@ Validation checks:
   range requests from the existing libsodium box envelope. Legacy policies are
   not guessed from `.publickeys` at an intermediate commit.
 
+Within an adoption/promotion operation, each distinct stored object is inspected
+once; contradictory descriptors remain fatal. Successful envelope validation is
+cached in the Git-resolved `git-remote-aws/validation-v2/` metadata directory
+(normally `.git/git-remote-aws/validation-v2/`, also supporting linked worktrees).
+Each new operation still HEADs each distinct object and checks ETag/size before
+using cached fingerprints. Entries are scoped to the resolved endpoint, bucket,
+key, range, codec and object identity. Cache hits never replace ancestry/chain
+checks or fetch authentication. Missing, corrupt or inaccessible local entries
+are misses; missing or changed remote data remains an error. Cache writes are
+atomic and best-effort; the directory can be deleted safely to force fresh header
+reads. Like other local Git metadata, the cache is trusted local state, not a
+security boundary against someone who can rewrite the checkout's metadata.
+
 Cross-repo reuse requires one ciphertext recipient from each current public-key
 chain and no extra recipients. Retained historical generations are compatible;
 adding/removing recipients or replacing identities can force repacking rather
@@ -111,18 +124,27 @@ on deterministic packing or encryption. Temporary storage remains bounded to one
 bundle's plaintext/ciphertext pair.
 
 Only superseded manifests are deleted, after confirmed publication of their
-complete replacement. An ambiguous commit preserves both candidates. Bundles
-are never automatically deleted, relocated, or garbage-collected. Manual deletion
-of a shared bundle can break every manifest referencing it. Deleting one repo's
-DynamoDB record and manifests does not grant ownership of its bundles.
+complete replacement. With bucket versioning enabled this adds delete markers,
+preserving the old manifest versions for administrative recovery. An ambiguous
+commit preserves both candidates. Bundles are never automatically deleted,
+relocated, or garbage-collected. Manual deletion of a shared bundle can break
+every manifest referencing it. Deleting one repo's DynamoDB record and
+manifests does not grant ownership of its bundles.
 
 Namespace discovery requires `s3:ListBucket` scoped to the namespace, and readers
 need `s3:GetObject` for referenced keys, including original legacy locations.
 Default-repo alias collision checks also read `BUCKET/NAMESPACE/1` in DynamoDB.
 Existing conditional upload, multipart-abort, manifest-delete, and lease
-permissions remain necessary. Resource setup does not alter IAM policies.
+permissions remain necessary. Every helper push checks/enables bucket versioning,
+requiring `s3:GetBucketVersioning` and (only for enablement) `s3:PutBucketVersioning`.
+See [setup and permissions](readme.md#usage) before upgrading writer permissions
+or first enabling versioning. Resource setup does not alter IAM policies.
 
 ## S3-only emergency recovery
+
+This recovers a checkout when DynamoDB metadata is lost but S3 objects survive.
+It does not inspect historical S3 versions. If S3 data was deleted or overwritten,
+restore its visibility administratively using versioning first.
 
 List self-contained candidates without accessing DynamoDB:
 

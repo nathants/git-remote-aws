@@ -187,6 +187,12 @@ func (clients *awsClients) push(requestCtx context.Context, table, bucket, prefi
 	}
 	branch := localBranch
 
+	// Check bucket versioning before taking a repository lease, including for
+	// no-op, already-promoted and empty destinations.
+	if err := clients.ensureBucketVersioning(requestCtx, bucket); err != nil {
+		panic(err)
+	}
+
 	// Cleanup releases ownership only; failed pushes must never publish metadata.
 	fmt.Fprintln(os.Stderr, "get dynamodb://"+table+"/"+bucket+"/"+prefix)
 	lockCtx, cancelLock := context.WithCancel(requestCtx)

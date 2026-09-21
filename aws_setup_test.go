@@ -83,6 +83,7 @@ func TestLeaseAWSSetupCreatesOnlyMissingResources(t *testing.T) {
 		name                                string
 		bucketMissing, tableMissing, ensure bool
 		createError, waitError, setupError  bool
+		versioningError                     bool
 	}{
 		{name: "existing", ensure: true},
 		{name: "missing without ensure", bucketMissing: true, tableMissing: true},
@@ -92,6 +93,7 @@ func TestLeaseAWSSetupCreatesOnlyMissingResources(t *testing.T) {
 		{name: "ambiguous bucket create", bucketMissing: true, ensure: true, createError: true},
 		{name: "incomplete bucket readiness", bucketMissing: true, ensure: true, waitError: true},
 		{name: "incomplete bucket setup", bucketMissing: true, ensure: true, setupError: true},
+		{name: "incomplete bucket versioning", bucketMissing: true, ensure: true, versioningError: true},
 	} {
 		for _, region := range []string{"us-east-1", "eu-west-1"} {
 			t.Run(scenario.name+"/"+region, func(t *testing.T) {
@@ -167,7 +169,7 @@ func TestLeaseAWSSetupCreatesOnlyMissingResources(t *testing.T) {
 						t.Error("setup mutated an existing bucket")
 					}
 					operation := "create bucket"
-					for _, key := range []string{"publicAccessBlock", "encryption", "policy", "tagging"} {
+					for _, key := range []string{"publicAccessBlock", "encryption", "policy", "tagging", "versioning"} {
 						if r.URL.Query().Has(key) {
 							operation = key
 						}
@@ -194,12 +196,20 @@ func TestLeaseAWSSetupCreatesOnlyMissingResources(t *testing.T) {
 					if r.Header.Get("X-Amz-Expected-Bucket-Owner") != "123456789012" {
 						t.Error("new-bucket configuration is not owner-scoped")
 					}
-					if scenario.setupError {
+					if scenario.setupError || scenario.versioningError && operation == "versioning" {
 						w.WriteHeader(http.StatusForbidden)
 						_, _ = io.WriteString(w, `<Error><Code>AccessDenied</Code></Error>`)
 						return
 					}
 					switch operation {
+					case "versioning":
+						var config struct {
+							Status    string
+							MFADelete string `xml:"MfaDelete"`
+						}
+						if err := xml.Unmarshal(body, &config); err != nil || config.Status != "Enabled" || config.MFADelete != "" {
+							t.Errorf("wrong versioning configuration: %s (%v)", body, err)
+						}
 					case "publicAccessBlock":
 						var policy struct{ BlockPublicAcls, IgnorePublicAcls, BlockPublicPolicy, RestrictPublicBuckets bool }
 						if err := xml.Unmarshal(body, &policy); err != nil || !policy.BlockPublicAcls || !policy.IgnorePublicAcls || !policy.BlockPublicPolicy || !policy.RestrictPublicBuckets {
@@ -247,11 +257,11 @@ func TestLeaseAWSSetupCreatesOnlyMissingResources(t *testing.T) {
 				child.Env = append(child.Env, "ensure="+ensure, "AWS_REGION="+region, "AWS_DEFAULT_REGION="+region, "AWS_ENDPOINT_URL_STS="+server.URL)
 				child.Stdin = strings.NewReader("capabilities\n\n")
 				output, err := child.CombinedOutput()
-				wantError := !scenario.ensure || scenario.createError || scenario.waitError || scenario.setupError
+				wantError := !scenario.ensure || scenario.createError || scenario.waitError || scenario.setupError || scenario.versioningError
 				if (err != nil) != wantError {
 					t.Fatalf("setup result: %v\n%s", err, output)
 				}
-				if scenario.waitError || scenario.setupError {
+				if scenario.waitError || scenario.setupError || scenario.versioningError {
 					for _, message := range []string{"was created but setup is incomplete", "before use", "StatusCode: 403"} {
 						if !strings.Contains(string(output), message) {
 							t.Errorf("post-create failure lost %q: %s", message, output)
@@ -264,7 +274,7 @@ func TestLeaseAWSSetupCreatesOnlyMissingResources(t *testing.T) {
 					t.Errorf("create must not be repeated: %v", calls)
 				}
 				if !wantError && scenario.bucketMissing {
-					for _, operation := range []string{"publicAccessBlock", "encryption", "policy", "tagging"} {
+					for _, operation := range []string{"publicAccessBlock", "encryption", "policy", "tagging", "versioning"} {
 						if calls[operation] != 1 {
 							t.Errorf("missing new-bucket configuration %s: %v", operation, calls)
 						}
@@ -274,13 +284,13 @@ func TestLeaseAWSSetupCreatesOnlyMissingResources(t *testing.T) {
 					t.Errorf("table was not created: %v", calls)
 				}
 				if scenario.createError || scenario.waitError {
-					for _, operation := range []string{"publicAccessBlock", "encryption", "policy", "tagging", "CreateTable"} {
+					for _, operation := range []string{"publicAccessBlock", "encryption", "policy", "tagging", "versioning", "CreateTable"} {
 						if calls[operation] != 0 {
 							t.Errorf("setup continued after creation/readiness failure: %v\n%s", calls, output)
 						}
 					}
 				}
-				if scenario.waitError || scenario.setupError {
+				if scenario.waitError || scenario.setupError || scenario.versioningError {
 					if !bucketExists || strings.Contains(string(output), "created private s3 bucket") {
 						t.Errorf("incomplete setup removed the bucket or reported success: %v\n%s", calls, output)
 					}

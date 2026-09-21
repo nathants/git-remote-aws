@@ -161,7 +161,10 @@ func (clients *awsClients) configureNewBucket(ctx context.Context, bucket string
 		Bucket: aws.String(bucket), ExpectedBucketOwner: account,
 		Tagging: &s3types.Tagging{TagSet: []s3types.Tag{{Key: aws.String("libaws.infraset"), Value: aws.String("")}}},
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	return clients.enableBucketVersioning(ctx, bucket, account)
 }
 
 func (clients *awsClients) ensureTable(ctx context.Context, table string, ensure bool) error {

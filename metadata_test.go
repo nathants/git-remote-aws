@@ -32,6 +32,9 @@ type metadataFixture struct {
 	pushTips                  map[string]string
 	commits, uploads, deletes int
 	reads, missing            int
+	versioningChecks          int
+	versioningDenied          bool
+	objectHeads, headerReads  map[string]int
 	afterRead                 func()
 }
 
@@ -116,8 +119,25 @@ func newMetadataFixture(t *testing.T) *metadataFixture {
 			}
 			return
 		}
+		if r.URL.Query().Has("versioning") {
+			if r.Method != http.MethodGet {
+				t.Errorf("unexpected versioning mutation: %s", r.Method)
+			}
+			fixture.versioningChecks++
+			if fixture.versioningDenied {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = io.WriteString(w, `<Error><Code>AccessDenied</Code></Error>`)
+			} else {
+				_, _ = io.WriteString(w, `<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>`)
+			}
+			return
+		}
 		switch r.Method {
 		case http.MethodHead:
+			if fixture.objectHeads == nil {
+				fixture.objectHeads = make(map[string]int)
+			}
+			fixture.objectHeads[r.URL.Path]++
 			if object, ok := fixture.objects[r.URL.Path]; ok {
 				w.Header().Set("Content-Length", fmt.Sprint(len(object)))
 				w.Header().Set("ETag", fixtureETag(object))
@@ -187,6 +207,10 @@ func newMetadataFixture(t *testing.T) *metadataFixture {
 			}
 			w.Header().Set("ETag", fixtureETag(body))
 			if interval := r.Header.Get("Range"); interval != "" {
+				if fixture.headerReads == nil {
+					fixture.headerReads = make(map[string]int)
+				}
+				fixture.headerReads[r.URL.Path]++
 				var first, last int
 				if _, err := fmt.Sscanf(interval, "bytes=%d-%d", &first, &last); err != nil || first < 0 || last < first || last >= len(body) {
 					w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
