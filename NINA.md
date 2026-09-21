@@ -150,3 +150,4 @@ identity, compatibility, or recovery.
   and new-helper reads; it also
   checks old encrypted bundle ETags after cloning and rotation. Supply the
   independently pinned old artifact described in the README to run it.
+
