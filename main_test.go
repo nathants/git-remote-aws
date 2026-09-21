@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -263,7 +264,7 @@ func listKeys(bucket, prefix string) []string {
 			panic("object key is missing its repository separator")
 		}
 		if strings.Contains(tail, "..") {
-			got = append(got, tail)
+			got = append(got, path.Base(tail))
 		}
 	}
 	sort.Strings(got)
@@ -723,7 +724,7 @@ func TestPushFailsWhenBundlesMetadataObjectIsMissing(t *testing.T) {
 	runAt(dir, "git", "add", ".")
 	runAt(dir, "git", "commit", "-m", "commit 2")
 
-	assertRunAtErrContains(t, dir, "failed to get bundles metadata", "git", "push", "origin", "master")
+	assertRunAtErrContains(t, dir, "read manifest", "git", "push", "origin", "master")
 	assertBundleKeys(t, bucket, prefix, []string{zeroHash + ".." + first})
 }
 
@@ -757,7 +758,7 @@ func TestPushFailsWhenBundlesMetadataObjectIsEmpty(t *testing.T) {
 	runAt(dir, "git", "add", ".")
 	runAt(dir, "git", "commit", "-m", "commit 2")
 
-	assertRunAtErrContains(t, dir, "bundles metadata is empty", "git", "push", "origin", "master")
+	assertRunAtErrContains(t, dir, "invalid manifest JSON", "git", "push", "origin", "master")
 	assertBundleKeys(t, bucket, prefix, []string{zeroHash + ".." + first})
 }
 
@@ -793,12 +794,24 @@ func TestFetchFailsWhenBundleMetadataContainsPathTraversal(t *testing.T) {
 	} else if !os.IsNotExist(err) {
 		panic(err)
 	}
-	putObject(bucket, repoMeta.BundlesS3Key, maliciousBundle)
-	putObject(bucket, prefix+"/"+maliciousBundle, "not an encrypted bundle")
+	repo, err := parseRepository(prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := testAWSClients().getManifest(t.Context(), bucket, repoMeta.BundlesS3Key, repo, repoMeta.Branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Bundles[0].Range = maliciousBundle
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	putObject(bucket, repoMeta.BundlesS3Key, string(data))
 
 	dir2, cleanup2 := newTempdir()
 	defer cleanup2()
-	assertRunAtErrContains(t, dir2, "invalid bundle name", "git", "clone", "aws://"+bucket+"+"+table+"/"+prefix)
+	assertRunAtErrContains(t, dir2, "invalid bundle chain", "git", "clone", "aws://"+bucket+"+"+table+"/"+prefix)
 	if _, err := os.Stat(escapedPath); err == nil {
 		t.Fatalf("bundle metadata path traversal wrote outside tempdir: %s", escapedPath)
 	} else if !os.IsNotExist(err) {

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -78,7 +79,7 @@ func TestBundleSizedPush(t *testing.T) {
 			push := "push refs/heads/archive/home:refs/heads/archive/home"
 			clone := t.TempDir()
 			runAt(clone, "git", "init", "-q", "--object-format="+format, "-b", "archive/home")
-			var prior []string
+			var prior []bundleRef
 			for round := range 2 {
 				if round != 0 {
 					for i := range 6 {
@@ -90,21 +91,21 @@ func TestBundleSizedPush(t *testing.T) {
 					t.Fatalf("sized push %d: %v\n%s", round, err, output)
 				}
 				fixture.mu.Lock()
-				list := append([]byte(nil), fixture.objects["/bucket/repo/bundles_"+tip]...)
+				m := fixtureManifest(t, fixture)
+				bundles := m.Bundles
 				commits := fixture.commits
 				fixture.mu.Unlock()
-				bundles := bundleNamesFromMetadata("test publication", list)
-				if len(bundles)-len(prior) < 2 || commits != round+1 || hashEnd(last(bundles)) != tip {
-					t.Fatalf("push did not atomically publish multiple bundles: %q, commits=%d", list, commits)
+				if len(bundles)-len(prior) < 2 || commits != round+1 || m.Tip != tip {
+					t.Fatalf("push did not atomically publish multiple bundles: %+v commits=%d", m, commits)
 				}
-				if len(prior) != 0 && !bytes.HasPrefix(list, []byte(strings.Join(prior, "\n")+"\n")) {
-					t.Fatalf("push replaced historical bundles: %q", list)
+				if len(prior) != 0 && !reflect.DeepEqual(prior, bundles[:len(prior)]) {
+					t.Fatal("push replaced historical bundle references")
 				}
 				previous := strings.Repeat("0", len(tip))
 				for _, name := range bundles {
-					parts := bundleNameParts(name)
+					parts := bundleNameParts(name.Range)
 					if parts[0] != previous {
-						t.Fatalf("discontinuous bundle chain: %q", list)
+						t.Fatalf("discontinuous bundle chain: %+v", bundles)
 					}
 					previous = parts[1]
 				}
@@ -234,7 +235,7 @@ func TestBundleSizeConfiguration(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	runAt(dir, "git", "init", "-q")
-	if size, err := pushBundleSize(t.Context()); err != nil || size != 1<<30 {
+	if size, err := pushBundleSize(t.Context()); err != nil || size != 256<<20 {
 		t.Fatalf("wrong default: %d, %v", size, err)
 	}
 	for _, value := range []string{"1g", "64k", "0", "-1", "", "no", "99999999999999999999g"} {

@@ -15,6 +15,20 @@ import (
 )
 
 func (clients *awsClients) encryptAndUploadBundle(ctx context.Context, bucket, key, pushTip, filename string, recipients [][]byte) error {
+	// A retry should not transfer a completed multipart object again merely
+	// to discover the conditional-write conflict at completion.
+	existing, err := clients.s3.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)})
+	if err == nil {
+		if existing.Metadata[bundlePushTipMetadata] != pushTip || aws.ToInt64(existing.ContentLength) <= 0 {
+			return fmt.Errorf("refusing existing bundle with different or unknown push tip: %s", key)
+		}
+		fmt.Fprintln(os.Stderr, "reuse completed bundle from the same push:", key)
+		return nil
+	}
+	var missing *s3types.NotFound
+	if !errors.As(err, &missing) {
+		return fmt.Errorf("inspect upload destination %s: %w", key, err)
+	}
 	plain, err := os.Open(filename)
 	if err != nil {
 		return err

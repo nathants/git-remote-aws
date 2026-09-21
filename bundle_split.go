@@ -17,7 +17,7 @@ import (
 	"github.com/gofrs/uuid/v5"
 )
 
-const defaultBundleSize int64 = 1 << 30
+const defaultBundleSize int64 = 256 << 20
 
 func pushBundleSize(ctx context.Context) (int64, error) {
 	output, err := gitCommand(ctx, "config", "--type=int", "--get", "remote-aws.bundleSize").CombinedOutput()

@@ -32,6 +32,13 @@ func TestLeaseHelperSignals(t *testing.T) {
 				runAt(dir, "git", "add", ".publickeys")
 				runAt(dir, "git", "commit", "-qm", "base")
 				base := runAtOut(dir, "git", "rev-parse", "HEAD")
+				fixture := newMetadataFixture(t)
+				if output, err := runMetadataHelper(t, dir, fixture.server.URL, "push refs/heads/master:refs/heads/master"); err != nil {
+					t.Fatalf("prepare base: %v\n%s", err, output)
+				}
+				fixture.mu.Lock()
+				baseData := bytes.Clone(fixture.data)
+				fixture.mu.Unlock()
 				runAt(dir, "git", "commit", "--allow-empty", "-qm", "next")
 				var releases atomic.Int32
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -40,14 +47,18 @@ func TestLeaseHelperSignals(t *testing.T) {
 						t.Error(err)
 						return
 					}
-					data := `{"branch":{"S":"master"},"bundles":{"S":"repo/bundles_old"}}`
+					data := baseData
 					if target := r.Header.Get("X-Amz-Target"); target != "" {
 						w.Header().Set("Content-Type", "application/x-amz-json-1.0")
 						switch strings.TrimPrefix(target, "DynamoDB_20120810.") {
 						case "DescribeTable":
 							_, _ = io.WriteString(w, `{"Table":{"TableStatus":"ACTIVE"}}`)
 						case "GetItem":
-							_, _ = fmt.Fprintf(w, `{"Item":{"id":{"S":"bucket/repo"},"data":{"M":%s}}}`, data)
+							if bytes.Contains(body, []byte(`"bucket/repo/1"`)) {
+								_, _ = io.WriteString(w, `{}`)
+								return
+							}
+							_, _ = fmt.Fprintf(w, `{"Item":{"id":{"S":"bucket/repo"},"data":%s}}`, data)
 						case "UpdateItem":
 							var request struct {
 								UpdateExpression          string
@@ -59,7 +70,7 @@ func TestLeaseHelperSignals(t *testing.T) {
 							}
 							switch request.UpdateExpression {
 							case "SET #owner = :owner, #expires = :expires":
-								_, _ = fmt.Fprintf(w, `{"Attributes":{"id":{"S":"bucket/repo"},"owner_token":%s,"expires_at":%s,"data":{"M":%s}}}`, request.ExpressionAttributeValues[":owner"], request.ExpressionAttributeValues[":expires"], data)
+								_, _ = fmt.Fprintf(w, `{"Attributes":{"id":{"S":"bucket/repo"},"owner_token":%s,"expires_at":%s,"data":%s}}`, request.ExpressionAttributeValues[":owner"], request.ExpressionAttributeValues[":expires"], data)
 							case "REMOVE #owner, #expires":
 								releases.Add(1)
 								_, _ = io.WriteString(w, `{}`)
@@ -77,9 +88,9 @@ func TestLeaseHelperSignals(t *testing.T) {
 					}
 					switch r.Method {
 					case http.MethodHead:
-						w.Header().Set("X-Amz-Bucket-Region", "us-east-1")
+						fixture.server.Config.Handler.ServeHTTP(w, r)
 					case http.MethodGet:
-						_, _ = fmt.Fprintf(w, "%s..%s", zeroHash, base)
+						fixture.server.Config.Handler.ServeHTTP(w, r)
 					default:
 						t.Errorf("unexpected S3 operation: %s", r.Method)
 						w.WriteHeader(http.StatusBadRequest)

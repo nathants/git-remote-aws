@@ -13,6 +13,7 @@ require (
 	github.com/gofrs/uuid/v5 v5.5.1
 	github.com/nathants/go-dynamolock v0.0.0-20260909022021-40f0418786d9
 	github.com/nathants/go-libsodium v0.0.0-20260907150908-165cd76c0d68
+	golang.org/x/crypto v0.56.0
 	golang.org/x/sys v0.47.0
 )
 
@@ -32,5 +33,4 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/signin v1.5.6 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sso v1.33.6 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.38.6 // indirect
-	golang.org/x/crypto v0.56.0 // indirect
 )

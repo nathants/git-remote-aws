@@ -1,7 +1,8 @@
 # Git-Remote-AWS
 
 Encrypted Git hosting in S3, with DynamoDB compare-and-swap for concurrent pushes.
-Each remote has one branch; force pushes are forbidden. Valid Git branch names
+Each remote has one branch; force pushes are forbidden. Repos within a namespace
+share immutable encrypted bundles without sharing a branch tip. Valid branch names,
 including `archive/home` are supported. SHA-1 and SHA-256 Git repositories and
 existing encrypted histories remain readable.
 
@@ -77,6 +78,15 @@ AWS shared profiles, credential sources, regions and service endpoint overrides
 use standard SDK v2 resolution. Clients share one loaded configuration per helper
 invocation, retaining the five-attempt request retry policy except for bucket
 creation. Clone and fetch work normally.
+
+URLs are `aws://BUCKET+TABLE/NAMESPACE[/REPO]`. An omitted repo is exactly `/1`;
+`WickedEngine3` and `WickedEngine3/1` are aliases, not a mapping to
+`WickedEngine/3`. To start a rewritten history, choose another repo in the same
+namespace, such as `WickedEngine3/2`. Its first push automatically adopts existing
+compatible ancestry chunks and uploads only the remaining suffix. Existing repos
+still forbid rewrites. See [shared namespace storage](storage.md) for identity,
+layout, permissions, validation, promotion, and recovery.
+
 If a concurrent push deletes the bundle list a reader just discovered, list/fetch
 rediscover the current pointer and list, up to three total attempts. Other errors
 and persistent absence still fail. Old lists are not retained indefinitely.
@@ -88,12 +98,12 @@ Rows need not be sorted; blank lines and a missing final newline are allowed.
 
 ## Bundle sizing and large pushes
 
-Initial and incremental pushes target **1 GiB per compressed Git bundle**, before
+Initial and incremental pushes target **256 MiB per compressed Git bundle**, before
 stream encryption. Override the soft target with a positive byte count; Git's
 binary `k`, `m`, and `g` suffixes are supported:
 
 ```sh
-git config remote-aws.bundleSize 1g
+git config remote-aws.bundleSize 256m
 ```
 
 The helper estimates object storage before packing, splits large commit ranges,
@@ -118,20 +128,44 @@ termination or an uncertain initiation response can leave incomplete uploads;
 inspect/abort those administratively. The helper does not change bucket lifecycle
 rules or IAM policies.
 
-All bundles in a push use the final pushed commit's recipient policy. The helper
-publishes one complete manifest and commits DynamoDB only after every bundle
-upload succeeds. Existing bundle names, encryption, manifest contents, and the
-DynamoDB data layout remain compatible: **no data migration or historical bundle
-rewrite is needed**. The previous cumulative manifest is still deleted after a
-successful metadata commit.
+All newly created bundles in a push use the final pushed commit's recipient
+policy. Inherited bundles retain their actual historical policy; cross-repo
+adoption checks the ciphertext envelope against the current recipient key chains.
+The helper publishes one self-contained JSON manifest and commits its DynamoDB
+pointer only after every dependency is durable. The previous cumulative manifest
+is deleted only after a confirmed metadata commit. Bundles are never deleted,
+moved, or automatically garbage-collected.
 
-Upgrade all writers before using split pushes: older helpers do not enforce the
-conditional S3 writes that protect shared intermediate range names. New bundle
-objects record their push tip in S3 user metadata. Retrying that same tip can
-reuse completed objects without replacing ciphertext. An existing range from a
-different or unknown push tip is never overwritten or automatically deleted;
-finish the original push or reconcile the leftover only after confirming it is
-not part of any published history.
+**Upgrade all writers before using the new manifest format.** Existing text lists
+are normalized into the same push/fetch path and promoted on a subsequent helper
+push. Historical ciphertext stays at its original S3 keys: no full re-upload,
+server-side copy, or re-encryption is required. Let old-helper uploads finish
+before promotion. Historical larger bundles remain unchanged; only new bundles
+use the smaller target. New ciphertext lives under the namespace's reserved
+`.remote-aws-v2/bundles/PUSH_TIP/` prefix, and manifests reference exact keys.
+
+Packing boundaries are not deterministic across different tips or local packing
+states. Reuse adopts existing boundaries instead of recreating them. Retries can
+reuse completed same-tip objects without transferring them again. Conditional
+writes and push-tip metadata prevent replacing another push's ciphertext.
+
+## Emergency recovery from S3
+
+Self-contained manifests allow recovery without any DynamoDB access:
+
+```sh
+# List candidate manifest keys, branches, and tips.
+git-remote-aws --recover --remote aws://BUCKET+TABLE/NAMESPACE/REPO
+
+# Explicitly select one and recover into a nonexistent directory.
+git-remote-aws --recover --remote aws://BUCKET+TABLE/NAMESPACE/REPO \
+  --manifest NAMESPACE/.remote-aws-v2/repos/REPO/manifests/TIP-UUID.json \
+  --directory /path/to/new-checkout
+```
+
+The normal private-key loader is still required. Recovery does not mutate AWS or
+claim which push was last acknowledged. See [recovery details](storage.md#s3-only-emergency-recovery)
+for legacy limitations and administrative pointer restoration.
 
 ## Upgrade existing tables
 

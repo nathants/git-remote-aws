@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +13,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -22,6 +26,8 @@ type metadataFixture struct {
 	server                    *httptest.Server
 	mu                        sync.Mutex
 	data                      json.RawMessage
+	records                   map[string]json.RawMessage
+	pageSize                  int
 	objects                   map[string][]byte
 	pushTips                  map[string]string
 	commits, uploads, deletes int
@@ -31,7 +37,7 @@ type metadataFixture struct {
 
 func newMetadataFixture(t *testing.T) *metadataFixture {
 	t.Helper()
-	fixture := &metadataFixture{data: json.RawMessage(`{"M":{}}`), objects: make(map[string][]byte), pushTips: make(map[string]string)}
+	fixture := &metadataFixture{data: json.RawMessage(`{"M":{}}`), objects: make(map[string][]byte), records: make(map[string]json.RawMessage), pushTips: make(map[string]string)}
 	fixture.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -43,19 +49,37 @@ func newMetadataFixture(t *testing.T) *metadataFixture {
 		defer fixture.mu.Unlock()
 		if target := r.Header.Get("X-Amz-Target"); target != "" {
 			w.Header().Set("Content-Type", "application/x-amz-json-1.0")
+			var keyed struct{ Key map[string]struct{ S string } }
+			if err := json.Unmarshal(body, &keyed); err != nil {
+				t.Error(err)
+				return
+			}
+			id := keyed.Key["id"].S
+			data := fixture.data
+			if id != "bucket/repo" {
+				data = fixture.records[id]
+			}
+			if len(data) == 0 {
+				data = json.RawMessage(`{"M":{}}`)
+			}
+
 			switch strings.TrimPrefix(target, "DynamoDB_20120810.") {
 			case "DescribeTable":
 				_, _ = io.WriteString(w, `{"Table":{"TableStatus":"ACTIVE"}}`)
 			case "GetItem":
+				if id == "bucket/repo/1" && fixture.records[id] == nil {
+					_, _ = io.WriteString(w, `{}`)
+					return
+				}
 				fixture.reads++
-				data, afterRead := fixture.data, fixture.afterRead
+				afterRead := fixture.afterRead
 				fixture.afterRead = nil
 				if afterRead != nil {
 					fixture.mu.Unlock()
 					afterRead()
 					fixture.mu.Lock()
 				}
-				_, _ = fmt.Fprintf(w, `{"Item":{"id":{"S":"bucket/repo"},"data":%s}}`, data)
+				_, _ = fmt.Fprintf(w, `{"Item":{"id":{"S":%q},"data":%s}}`, id, data)
 			case "UpdateItem":
 				var request struct {
 					UpdateExpression          string
@@ -68,7 +92,7 @@ func newMetadataFixture(t *testing.T) *metadataFixture {
 				}
 				switch request.UpdateExpression {
 				case "SET #owner = :owner, #expires = :expires":
-					_, _ = fmt.Fprintf(w, `{"Attributes":{"id":{"S":"bucket/repo"},"owner_token":%s,"expires_at":%s,"data":%s}}`, request.ExpressionAttributeValues[":owner"], request.ExpressionAttributeValues[":expires"], fixture.data)
+					_, _ = fmt.Fprintf(w, `{"Attributes":{"id":{"S":%q},"owner_token":%s,"expires_at":%s,"data":%s}}`, id, request.ExpressionAttributeValues[":owner"], request.ExpressionAttributeValues[":expires"], data)
 				case "REMOVE #owner, #expires", "SET #expires = :next":
 					_, _ = io.WriteString(w, `{}`)
 				default:
@@ -78,7 +102,11 @@ func newMetadataFixture(t *testing.T) *metadataFixture {
 						w.WriteHeader(http.StatusBadRequest)
 						return
 					}
-					fixture.data = next
+					if id == "bucket/repo" {
+						fixture.data = next
+					} else {
+						fixture.records[id] = next
+					}
 					fixture.commits++
 					_, _ = io.WriteString(w, `{}`)
 				}
@@ -92,6 +120,7 @@ func newMetadataFixture(t *testing.T) *metadataFixture {
 		case http.MethodHead:
 			if object, ok := fixture.objects[r.URL.Path]; ok {
 				w.Header().Set("Content-Length", fmt.Sprint(len(object)))
+				w.Header().Set("ETag", fixtureETag(object))
 				w.Header().Set("X-Amz-Meta-Git-Remote-Aws-Push-Tip", fixture.pushTips[r.URL.Path])
 			} else if strings.Count(r.URL.Path, "/") > 1 {
 				w.WriteHeader(http.StatusNotFound)
@@ -108,12 +137,64 @@ func newMetadataFixture(t *testing.T) *metadataFixture {
 			fixture.pushTips[r.URL.Path] = r.Header.Get("X-Amz-Meta-Git-Remote-Aws-Push-Tip")
 			fixture.uploads++
 		case http.MethodGet:
+			if r.URL.Query().Get("list-type") == "2" {
+				var keys []string
+				prefix := "/bucket/" + r.URL.Query().Get("prefix")
+				for key := range fixture.objects {
+					if strings.HasPrefix(key, prefix) {
+						keys = append(keys, key)
+					}
+				}
+				sort.Strings(keys)
+				start, _ := strconv.Atoi(r.URL.Query().Get("continuation-token"))
+				end := len(keys)
+				if fixture.pageSize > 0 {
+					end = min(end, start+fixture.pageSize)
+				}
+				type entry struct {
+					Key  string
+					Size int
+				}
+				result := struct {
+					XMLName               xml.Name `xml:"ListBucketResult"`
+					IsTruncated           bool
+					NextContinuationToken string `xml:",omitempty"`
+					Contents              []entry
+				}{}
+				if end < len(keys) {
+					result.IsTruncated = true
+					result.NextContinuationToken = strconv.Itoa(end)
+				}
+				for _, key := range keys[start:end] {
+					result.Contents = append(result.Contents, entry{strings.TrimPrefix(key, "/bucket/"), len(fixture.objects[key])})
+				}
+				if err := xml.NewEncoder(w).Encode(result); err != nil {
+					t.Error(err)
+				}
+				return
+			}
 			body, ok := fixture.objects[r.URL.Path]
 			if !ok {
 				fixture.missing++
 				w.WriteHeader(http.StatusNotFound)
 				_, _ = io.WriteString(w, `<Error><Code>NoSuchKey</Code><Message>list was deleted</Message></Error>`)
 				return
+			}
+			if condition := r.Header.Get("If-Match"); condition != "" && condition != fixtureETag(body) {
+				w.WriteHeader(http.StatusPreconditionFailed)
+				_, _ = io.WriteString(w, `<Error><Code>PreconditionFailed</Code></Error>`)
+				return
+			}
+			w.Header().Set("ETag", fixtureETag(body))
+			if interval := r.Header.Get("Range"); interval != "" {
+				var first, last int
+				if _, err := fmt.Sscanf(interval, "bytes=%d-%d", &first, &last); err != nil || first < 0 || last < first || last >= len(body) {
+					w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+					return
+				}
+				w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", first, last, len(body)))
+				w.WriteHeader(http.StatusPartialContent)
+				body = body[first : last+1]
 			}
 			_, _ = w.Write(body)
 		case http.MethodDelete:
@@ -127,6 +208,26 @@ func newMetadataFixture(t *testing.T) *metadataFixture {
 	}))
 	t.Cleanup(fixture.server.Close)
 	return fixture
+}
+
+func fixtureETag(data []byte) string { return fmt.Sprintf(`"%x"`, sha256.Sum256(data)) }
+
+// Caller holds the fixture mutex.
+func fixtureManifest(t *testing.T, fixture *metadataFixture) *manifest {
+	t.Helper()
+	var payload struct {
+		M struct {
+			Bundles struct{ S string } `json:"bundles"`
+		}
+	}
+	if err := json.Unmarshal(fixture.data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	var m manifest
+	if err := json.Unmarshal(fixture.objects["/bucket/"+payload.M.Bundles.S], &m); err != nil {
+		t.Fatal(err)
+	}
+	return &m
 }
 
 func runMetadataHelper(t *testing.T, directory, endpoint, command string) (string, error) {
@@ -191,7 +292,7 @@ func TestBundleReadSurvivesConcurrentPublication(t *testing.T) {
 			}
 			fixture.mu.Lock()
 			defer fixture.mu.Unlock()
-			if fixture.reads != 2 || fixture.missing != 1 || fixture.deletes != 1 || fixture.commits != 2 || !bytes.Contains(fixture.data, []byte("repo/bundles_"+tip)) {
+			if fixture.reads != 2 || fixture.missing != 1 || fixture.deletes != 1 || fixture.commits != 2 || !bytes.Contains(fixture.data, []byte("repo/.remote-aws-v2/repos/1/manifests/"+tip)) {
 				t.Fatalf("race not exercised: reads=%d missing=%d deletes=%d commits=%d", fixture.reads, fixture.missing, fixture.deletes, fixture.commits)
 			}
 		})
@@ -232,6 +333,11 @@ func TestBundleRediscoveryScopeAndLimit(t *testing.T) {
 					case "DescribeTable":
 						_, _ = io.WriteString(w, `{"Table":{"TableStatus":"ACTIVE"}}`)
 					case "GetItem":
+						body, _ := io.ReadAll(r.Body)
+						if bytes.Contains(body, []byte(`"bucket/repo/1"`)) {
+							_, _ = io.WriteString(w, `{}`)
+							return
+						}
 						reads++
 						if scenario.name == "initially-empty" || scenario.name == "pointer-vanishes" && reads > 1 {
 							_, _ = io.WriteString(w, `{}`)

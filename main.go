@@ -75,31 +75,10 @@ func bundleNamesFromMetadata(location string, data []byte) []string {
 	return bundles
 }
 
-func (clients *awsClients) getBundles(ctx context.Context, bucket, s3Key string) ([]string, error) {
-	if s3Key == "" {
-		return nil, nil
-	}
-	location := "s3://" + bucket + "/" + s3Key
-	fmt.Fprintln(os.Stderr, "get "+location)
-	out, err := clients.s3.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(bucket),
-		Key:    aws.String(s3Key),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to get bundles metadata %s: %w", location, err)
-	}
-	defer func() { _ = out.Body.Close() }()
-	data, err := io.ReadAll(out.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read bundles metadata %s: %w", location, err)
-	}
-	return bundleNamesFromMetadata(location, data), nil
-}
-
 // A writer can replace the DynamoDB pointer and delete its old list between a
 // reader's two requests. Rediscover the complete pair on that precise absence,
 // not on permission, transport, parsing, or encrypted-bundle failures.
-func (clients *awsClients) readPublishedMetadata(ctx context.Context, table, bucket, prefix string) (*RepoMeta, []string, error) {
+func (clients *awsClients) readPublishedMetadata(ctx context.Context, table, bucket, prefix string) (*RepoMeta, *manifest, error) {
 	const maximumAttempts = 3
 	var missingErr error
 	var previousBranch string
@@ -125,9 +104,13 @@ func (clients *awsClients) readPublishedMetadata(ctx context.Context, table, buc
 				return nil, nil, fmt.Errorf("remote branch changed during metadata rediscovery: %w", missingErr)
 			}
 		}
-		bundles, err := clients.getBundles(ctx, bucket, meta.BundlesS3Key)
+		repo, err := parseRepository(prefix)
+		if err != nil {
+			return nil, nil, err
+		}
+		m, err := clients.getManifest(ctx, bucket, meta.BundlesS3Key, repo, meta.Branch)
 		if err == nil {
-			return meta, bundles, nil
+			return meta, m, nil
 		}
 		var missing *s3types.NoSuchKey
 		if !errors.As(err, &missing) {
@@ -237,7 +220,7 @@ func (clients *awsClients) push(requestCtx context.Context, table, bucket, prefi
 	if repoMeta == nil {
 		repoMeta = &RepoMeta{}
 	}
-	bundles, err := clients.getBundles(ctx, bucket, repoMeta.BundlesS3Key)
+	repo, err := parseRepository(prefix)
 	if err != nil {
 		panic(err)
 	}
@@ -252,6 +235,15 @@ func (clients *awsClients) push(requestCtx context.Context, table, bucket, prefi
 		repoMeta.Branch = branch
 	}
 
+	current, err := clients.getManifest(ctx, bucket, repoMeta.BundlesS3Key, repo, repoMeta.Branch)
+	if err != nil {
+		panic(err)
+	}
+	var bundles []bundleRef
+	if current != nil {
+		bundles = current.Bundles
+	}
+
 	// find latest local hash
 	var stdout bytes.Buffer
 	cmd := gitCommand(ctx, "log", "--format=%H", "-1", localRef)
@@ -264,7 +256,7 @@ func (clients *awsClients) push(requestCtx context.Context, table, bucket, prefi
 
 	// Check ancestry against the selected commit, not a branch that may move.
 	if len(bundles) > 0 {
-		hashRemote := hashEnd(last(bundles))
+		hashRemote := hashEnd(last(bundles).Range)
 		contains, _ := gitBranchContains(ctx, hash, hashRemote)
 		if !contains {
 			panic("remote has new commits, pull before pushing")
@@ -273,14 +265,14 @@ func (clients *awsClients) push(requestCtx context.Context, table, bucket, prefi
 
 	base := ""
 	if len(bundles) > 0 {
-		base = hashEnd(last(bundles))
+		base = hashEnd(last(bundles).Range)
 	}
 	recipients, err := pushRecipients(ctx, base, hash)
 	if err != nil {
 		panic(err)
 	}
 	// A no-op push must not conceal uncommitted recipient changes either.
-	if base == hash {
+	if base == hash && current != nil && !current.legacy {
 		fmt.Println()
 		return
 	}
@@ -305,35 +297,53 @@ func (clients *awsClients) push(requestCtx context.Context, table, bucket, prefi
 		}
 	}
 
-	bundleSize, err := pushBundleSize(ctx)
-	if err != nil {
-		panic(err)
+	// Existing destinations keep their exact chain. Empty destinations may
+	// inherit a complete compatible prefix from any snapshot in the namespace.
+	if len(bundles) == 0 {
+		chains, err := recipientChainsAt(ctx, hash)
+		if err != nil {
+			panic(err)
+		}
+		bundles, err = clients.adoptBundles(ctx, bucket, repo, branch, hash, chains)
+		if err != nil {
+			panic(err)
+		}
+		if len(bundles) != 0 {
+			base = hashEnd(last(bundles).Range)
+		}
+	} else if current.legacy {
+		bundles, err = clients.validateBundleChain(ctx, bucket, bundles)
+		if err != nil {
+			panic(err)
+		}
 	}
-	builder := pushBundleBuilder{
-		ctx: ctx, directory: tempdir, target: bundleSize,
-		consume: func(filename string) error {
-			name := path.Base(filename)
-			if err := clients.encryptAndUploadBundle(ctx, bucket, prefix+"/"+name, hash, filename, recipients); err != nil {
-				return err
-			}
-			bundles = append(bundles, name)
-			return nil
-		},
+	if base != hash {
+		bundleSize, err := pushBundleSize(ctx)
+		if err != nil {
+			panic(err)
+		}
+		builder := pushBundleBuilder{
+			ctx: ctx, directory: tempdir, target: bundleSize,
+			consume: func(filename string) error {
+				name := path.Base(filename)
+				key := repo.bundleKey(hash, name)
+				if err := clients.encryptAndUploadBundle(ctx, bucket, key, hash, filename, recipients); err != nil {
+					return err
+				}
+				ref, err := clients.inspectBundle(ctx, bucket, bundleRef{Range: name, Key: key})
+				if err != nil {
+					return err
+				}
+				bundles = append(bundles, ref)
+				return nil
+			},
+		}
+		if err := builder.create(base, hash); err != nil {
+			panic(err)
+		}
 	}
-	if err := builder.create(base, hash); err != nil {
-		panic(err)
-	}
-
-	// Publish one cumulative list only after every encrypted bundle is uploaded.
-	bundleData := []byte(strings.Join(bundles, "\n"))
 	oldBundlesS3Key := repoMeta.BundlesS3Key
-	repoMeta.BundlesS3Key = prefix + "/" + "bundles_" + hash
-	fmt.Fprintln(os.Stderr, "put s3://"+bucket+"/"+repoMeta.BundlesS3Key)
-	_, err = clients.s3.PutObject(ctx, &s3.PutObjectInput{
-		Bucket: aws.String(bucket),
-		Key:    aws.String(repoMeta.BundlesS3Key),
-		Body:   bytes.NewReader(bundleData),
-	})
+	repoMeta.BundlesS3Key, err = clients.putManifest(ctx, bucket, repo, newManifest(repo, branch, hash, bundles))
 	if err != nil {
 		panic(err)
 	}
@@ -388,7 +398,7 @@ func (clients *awsClients) fetch(ctx context.Context, table, bucket, prefix, rem
 	ref := parts[1]                                          // refs/heads/master
 	branch := refBranch(ctx, ref)
 
-	repoMeta, bundles, err := clients.readPublishedMetadata(ctx, table, bucket, prefix)
+	repoMeta, m, err := clients.readPublishedMetadata(ctx, table, bucket, prefix)
 	if err != nil {
 		panic(err)
 	}
@@ -401,12 +411,21 @@ func (clients *awsClients) fetch(ctx context.Context, table, bucket, prefix, rem
 		panic(fmt.Sprintf("remote branch does not match local branch, %s != %s", branch, repoMeta.Branch))
 	}
 
+	if m == nil {
+		panic("remote not found")
+	}
+	clients.fetchManifest(ctx, bucket, remotePath, m)
+	fmt.Println("")
+}
+
+func (clients *awsClients) fetchManifest(ctx context.Context, bucket, remotePath string, m *manifest) {
+	branch, bundles := m.Branch, m.Bundles
 	// walk backward from newest to oldest through remote bundles.
 	// stop when the bundle end commit exists in the local data. all
 	// bundles which do not exist in local need to be fetched.
-	var bundlesToFetch []string
+	var bundlesToFetch []bundleRef
 	for _, bundle := range reverse(bundles) {
-		hash := hashEnd(bundle)
+		hash := hashEnd(bundle.Range)
 		contains, known := gitBranchContains(ctx, branch, hash)
 		if known && contains {
 			break
@@ -427,21 +446,26 @@ func (clients *awsClients) fetch(ctx context.Context, table, bucket, prefix, rem
 	for _, bundle := range bundlesToFetch {
 
 		// fetch object
-		fmt.Fprintln(os.Stderr, "get s3://"+bucket+"/"+prefix+"/"+bundle)
+		fmt.Fprintln(os.Stderr, "get s3://"+bucket+"/"+bundle.Key)
 		out, err := clients.s3.GetObject(ctx, &s3.GetObjectInput{
-			Bucket: aws.String(bucket),
-			Key:    aws.String(prefix + "/" + bundle),
+			Bucket:  aws.String(bucket),
+			Key:     aws.String(bundle.Key),
+			IfMatch: optionalString(bundle.ETag),
 		})
 		if err != nil {
 			panic(err)
 		}
-		bundleFileEncrypted := path.Join(tempdir, bundle)
+		bundleFileEncrypted := path.Join(tempdir, bundle.Range)
 		f, err := os.Create(bundleFileEncrypted)
 		if err != nil {
 			_ = out.Body.Close()
 			panic(err)
 		}
-		_, err = io.Copy(f, out.Body)
+		count, copyErr := io.Copy(f, out.Body)
+		err = copyErr
+		if err == nil && bundle.Size != 0 && count != bundle.Size {
+			err = fmt.Errorf("bundle size changed: %s", bundle.Key)
+		}
 		closeBodyErr := out.Body.Close()
 		closeFileErr := f.Close()
 		if err != nil {
@@ -495,6 +519,11 @@ func (clients *awsClients) fetch(ctx context.Context, table, bucket, prefix, rem
 			panic(err)
 		}
 
+		heads := strings.Fields(bundleStdout.String())
+		if len(heads) != 2 || heads[0] != hashEnd(bundle.Range) {
+			panic(fmt.Errorf("bundle head does not match its manifest range: %s", bundle.Key))
+		}
+
 		// remove
 		err = os.Remove(bundleFileEncrypted)
 		if err != nil {
@@ -507,14 +536,25 @@ func (clients *awsClients) fetch(ctx context.Context, table, bucket, prefix, rem
 
 	}
 
-	// communicate with git caller
-	fmt.Println("")
+	// Validate the selected object closure, not unrelated refs or clone's
+	// temporary refs/heads/.invalid HEAD. --quiet bounds command output.
+	output, err := gitCommand(ctx, "rev-list", "--objects", "--quiet", "--missing=error", m.Tip).CombinedOutput()
+	if err != nil {
+		panic(fmt.Errorf("incomplete fetched history: %w: %s", err, output))
+	}
+}
+
+func optionalString(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return aws.String(value)
 }
 
 // git helper list
 func (clients *awsClients) list(ctx context.Context, table, bucket, prefix string) {
 
-	repoMeta, remoteBundles, err := clients.readPublishedMetadata(ctx, table, bucket, prefix)
+	repoMeta, m, err := clients.readPublishedMetadata(ctx, table, bucket, prefix)
 	if err != nil {
 		panic(err)
 	}
@@ -526,9 +566,9 @@ func (clients *awsClients) list(ctx context.Context, table, bucket, prefix strin
 	}
 
 	// communicate with git caller
-	if len(remoteBundles) > 0 {
+	if m != nil {
 		// if remote bundles exist, print the latest hash
-		hash := hashEnd(last(remoteBundles))
+		hash := m.Tip
 		if len(hash) == 64 {
 			fmt.Println(":object-format sha256")
 		}
@@ -567,7 +607,11 @@ func gitHelper() {
 	if !ok {
 		panic("remote URL is missing a repository separator")
 	}
-	prefix = strings.TrimSuffix(prefix, "/")
+	repo, err := parseRepository(prefix)
+	if err != nil {
+		panic(err)
+	}
+	prefix = repo.id()
 	bucket, table, ok := strings.Cut(bucketAndTable, "+")
 	if !ok {
 		panic("remote URL is missing a bucket/table separator")
@@ -637,6 +681,15 @@ func gitHelper() {
 }
 
 func (clients *awsClients) helperCommand(ctx context.Context, table, bucket, prefix, remotePath, command string) {
+	if command != "capabilities" {
+		repo, err := parseRepository(prefix)
+		if err != nil {
+			panic(err)
+		}
+		if err := clients.checkRepositoryAlias(ctx, table, bucket, repo); err != nil {
+			panic(err)
+		}
+	}
 	if command == "capabilities" {
 		capabilities()
 	} else if command == "list for-push" || command == "list" {
@@ -766,6 +819,10 @@ func main() {
 		decrypt()
 	case "-k", "--keygen":
 		if err := keygen(os.Args[2:], os.Stdout); err != nil {
+			panic(err)
+		}
+	case "--recover":
+		if err := recoverRepository(os.Args[2:]); err != nil {
 			panic(err)
 		}
 	case "--migrate-dynamolock":

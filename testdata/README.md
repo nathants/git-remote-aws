@@ -7,9 +7,12 @@ commit is recorded in each fixture. All keys and content are synthetic; the
 included private keys are public test fixtures, never production recipients.
 
 `TestBundleLibawsRemovalCompatibility` lists, decrypts/imports and extends these
-histories with the current helper, without migrating records or rewriting the
-historical ciphertext. Provider responses are scripted, not a simulation of
-DynamoDB's condition evaluator; the separate lease tests cover that protocol.
+histories with the current helper, promoting only manifests without rewriting
+historical ciphertext. `TestBundleLegacyPromotionWithoutUpload` also verifies
+metadata-only promotion and cross-repo reuse, and `TestNamespaceLegacyAdoptionAWS`
+exercises these retained ciphertexts against actual S3 and DynamoDB. Cloud-free
+provider responses are scripted, not a simulation of DynamoDB's condition
+evaluator; the separate lease tests cover that protocol.
 
 The fixtures were generated before changing production code, using the test-only
 `GIT_REMOTE_AWS_GENERATE_LIBAWS_FIXTURES=1` path. Normal tests never regenerate

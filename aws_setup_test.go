@@ -342,8 +342,9 @@ func TestLeaseAWSConfigurationPreservesProfileEndpoints(t *testing.T) {
 	if output, err := child.CombinedOutput(); err != nil {
 		t.Fatalf("profile configuration failed: %v\n%s", err, output)
 	}
-	if signed.Load() != 2 {
-		t.Fatalf("profile endpoints received %d signed calls, want 2", signed.Load())
+	// DescribeTable, alias collision check, and repository pointer lookup.
+	if signed.Load() != 3 {
+		t.Fatalf("profile endpoints received %d signed calls, want 3", signed.Load())
 	}
 }
 

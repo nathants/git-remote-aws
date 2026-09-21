@@ -1,7 +1,9 @@
 # Git-Remote-AWS
 
 Read [readme.md](readme.md) for the remote URL, recipient-key policy, and the
-lease-format table cutover before changing storage or push behavior.
+lease-format table cutover before changing storage or push behavior. Read
+[shared namespace storage](storage.md) before changing manifests, adoption, URL
+identity, compatibility, or recovery.
 
 ## Storage invariants
 
@@ -48,7 +50,7 @@ lease-format table cutover before changing storage or push behavior.
   remain forbidden. Preserve SHA-1/SHA-256 and historical encrypted bundles.
 - Read [bundle sizing](readme.md#bundle-sizing-and-large-pushes) before changing
   `bundle_split.go` or `bundle_upload.go`. Initial and incremental pushes use a
-  1 GiB soft compressed-bundle target (`remote-aws.bundleSize`). Estimate before
+  256 MiB soft compressed-bundle target (`remote-aws.bundleSize`). Estimate before
   packing and check actual sizes; keep boundaries on an ancestry chain, including
   when the remote base is reached through a merge's non-first parent. An
   indivisible first-parent increment can exceed the target. Only one bundle's
@@ -59,14 +61,32 @@ lease-format table cutover before changing storage or push behavior.
   that the ref is still direct while holding Git's transaction lock, then commit;
   an old-OID guard with `--no-deref` alone also accepts symbolic replacements.
   Interrupted creation can leave a ref whose name is reported for inspection.
-- Multipart upload is transport only: preserve bundle names, codecs, list format,
-  and DynamoDB layout. All bundles use the final push tip's recipient policy.
-  Conditional S3 creation and push-tip object metadata prevent a stale writer
-  from overwriting ciphertext encrypted under another push's policy. Only an
-  exact push-tip match permits reuse; do not backfill old objects or delete
-  conflicting leftovers. Upgrade writers before using split pushes. Abort only
-  the owned multipart upload ID with a bounded independent context; preserve
-  primary errors and never delete a completed object on ambiguous completion.
+- Namespace URLs are `NAMESPACE[/REPO]`, with `/1` implicit. Both default aliases
+  retain DynamoDB ID `BUCKET/NAMESPACE`; other IDs are `BUCKET/NAMESPACE/REPO`.
+  Reject collisions with literal legacy `/1` records. No numeric-suffix inference.
+- `manifest.go` normalizes legacy text lists into the common model. Read operations
+  never persist promotion. Push writes self-contained version-2 manifests with
+  exact keys, continuous ranges, ETags/sizes, codec/format, branch/tip and actual
+  recipient fingerprints; it never moves or rewrites historical ciphertext.
+  Upgrade all writers first. Empty destinations adopt compatible existing prefixes;
+  existing destinations retain their own chains. Never turn missing DynamoDB
+  metadata into permission to rewrite a surviving S3 history.
+- Adopted chains must cover the root through the reuse endpoint. Validate native
+  Git ancestry, scope, object identities and actual envelope recipients (bounded,
+  ETag-conditional range reads). A retained key generation is compatible; unknown
+  or different recipient identities are not. Fetch authenticates ciphertext and
+  verifies heads, prerequisites and reachable object closure. Do not run a whole
+  ref-database fsck inside the helper: Git clone temporarily uses `.invalid` HEAD.
+- Multipart upload is transport only: preserve range names, shared codecs, and
+  DynamoDB layout. Newly created bundles use the final push tip's recipient policy.
+  Conditional S3 creation and push-tip paths/metadata prevent stale writers from
+  overwriting another push's ciphertext. Exact-tip retry preflight avoids another
+  transfer of completed objects. Never backfill/delete conflicting leftovers.
+  Abort only the owned multipart upload ID with a bounded independent context;
+  preserve primary errors and completed objects on ambiguous completion.
+- `--recover` lists/selects self-contained manifests and imports into a new
+  directory through the common fetch path using only S3 reads. It does not write
+  DynamoDB, infer the last acknowledged push, or automatically choose a snapshot.
 - Push/fetch branch refs use native `git check-ref-format --branch` through the
   cancelable Git runner. Valid slash names are supported; the returned name must
   equal the literal input so checkout expressions such as `@{-1}` cannot expand.
@@ -75,7 +95,8 @@ lease-format table cutover before changing storage or push behavior.
   `NoSuchKey` for that list triggers rediscovery; a changed branch, lost pointer,
   other failure, or exhausted budget remains an error. Missing encrypted bundles
   do not trigger it. Push keeps its lease-protected read, and successful pushes
-  still delete the old cumulative list; no historical-list retention is added.
+  still delete the old cumulative manifest; no historical-manifest retention or
+  bundle garbage collection is added.
 
 ## Validation
 
@@ -93,6 +114,11 @@ lease-format table cutover before changing storage or push behavior.
   disposable, pre-provisioned unversioned bucket/id-keyed table. Never point tests
   at production or go-dynamolock's reusable test table. Remove scratch resources
   after confirming test cleanup.
+- Namespace cloud-free coverage uses small real Git bundles, both object formats,
+  legacy ciphertext fixtures, recipient rotation/replacement, corruption/gaps,
+  pagination, alias collisions, lost pointers, and S3-only recovery. Live
+  `TestNamespace*AWS` covers legacy promotion/reuse and actual concurrent writes
+  to separate/same destination leases. Keep these in the full live gate.
 - Read [fixture provenance and regeneration](testdata/README.md) before
   regenerating stored-data compatibility fixtures; use the retained pre-removal
   producer, never current production code.

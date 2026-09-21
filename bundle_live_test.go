@@ -33,17 +33,25 @@ func TestSizedBundlePushAWS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bundles, err := clients.getBundles(t.Context(), bucket, meta.BundlesS3Key)
+	repo, err := parseRepository(prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := clients.getManifest(t.Context(), bucket, meta.BundlesS3Key, repo, meta.Branch)
+	var bundles []bundleRef
+	if m != nil {
+		bundles = m.Bundles
+	}
 	if err != nil || len(bundles) < 2 {
 		t.Fatalf("initial push did not publish multiple bundles: %v, %v", bundles, err)
 	}
 	identities := make(map[string]string)
 	for _, name := range bundles {
-		out, err := clients.s3.HeadObject(t.Context(), &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: aws.String(prefix + "/" + name)})
+		out, err := clients.s3.HeadObject(t.Context(), &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: aws.String(name.Key)})
 		if err != nil {
 			t.Fatal(err)
 		}
-		identities[name] = aws.ToString(out.ETag)
+		identities[name.Key] = aws.ToString(out.ETag)
 	}
 	clone := filepath.Join(t.TempDir(), "clone")
 	runAt(filepath.Dir(clone), "git", "clone", remote, clone)
@@ -58,16 +66,19 @@ func TestSizedBundlePushAWS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bundles, err = clients.getBundles(t.Context(), bucket, meta.BundlesS3Key)
+	m, err = clients.getManifest(t.Context(), bucket, meta.BundlesS3Key, repo, meta.Branch)
+	if m != nil {
+		bundles = m.Bundles
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := clients.s3.HeadObject(t.Context(), &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: aws.String(prefix + "/" + last(bundles))})
+	out, err := clients.s3.HeadObject(t.Context(), &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: aws.String(last(bundles).Key)})
 	if err != nil || aws.ToInt64(out.ContentLength) <= bundleUploadPartSize || !strings.Contains(aws.ToString(out.ETag), "-2") {
 		t.Fatalf("large bundle was not uploaded in two parts: %+v, %v", out, err)
 	}
 	for name, before := range identities {
-		out, err := clients.s3.HeadObject(t.Context(), &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: aws.String(prefix + "/" + name)})
+		out, err := clients.s3.HeadObject(t.Context(), &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: aws.String(name)})
 		if err != nil || before != aws.ToString(out.ETag) {
 			t.Fatalf("incremental push rewrote prior ciphertext: %s, %v", name, err)
 		}

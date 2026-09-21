@@ -22,7 +22,11 @@ import (
 // runs the actual CLI, including error recovery, with isolated SDK configuration.
 func TestLeasePush(t *testing.T) {
 	if os.Getenv("GIT_REMOTE_AWS_PUSH_CHILD") == "1" {
-		os.Args = []string{"git-remote-aws", "origin", "aws://bucket+table/repo"}
+		remote := os.Getenv("GIT_REMOTE_AWS_TEST_REMOTE")
+		if remote == "" {
+			remote = "aws://bucket+table/repo"
+		}
+		os.Args = []string{"git-remote-aws", "origin", remote}
 		main()
 		return
 	}
@@ -37,7 +41,13 @@ func TestLeasePush(t *testing.T) {
 			}
 			runAt(dir, "git", "add", ".publickeys")
 			runAt(dir, "git", "commit", "-qm", "base")
-			base := runAtOut(dir, "git", "rev-parse", "HEAD")
+			fixture := newMetadataFixture(t)
+			if output, err := runMetadataHelper(t, dir, fixture.server.URL, "push refs/heads/master:refs/heads/master"); err != nil {
+				t.Fatalf("prepare base: %v\n%s", err, output)
+			}
+			fixture.mu.Lock()
+			baseData := bytes.Clone(fixture.data)
+			fixture.mu.Unlock()
 			if !strings.HasPrefix(scenario, "no-op") {
 				runAt(dir, "git", "commit", "--allow-empty", "-qm", "next")
 			}
@@ -81,6 +91,10 @@ func TestLeasePush(t *testing.T) {
 				defer mu.Unlock()
 				if target := r.Header.Get("X-Amz-Target"); target != "" {
 					w.Header().Set("Content-Type", "application/x-amz-json-1.0")
+					if strings.HasSuffix(target, ".GetItem") && bytes.Contains(body, []byte(`"bucket/repo/1"`)) {
+						_, _ = io.WriteString(w, `{}`)
+						return
+					}
 					if strings.HasSuffix(target, ".DescribeTable") {
 						_, _ = io.WriteString(w, `{"Table":{"TableStatus":"ACTIVE"}}`)
 						return
@@ -99,12 +113,11 @@ func TestLeasePush(t *testing.T) {
 					}
 					if !acquired {
 						acquired = true
-						branch := "master"
+						data := baseData
 						if strings.HasPrefix(scenario, "branch-failure") {
-							branch = "other"
+							data = bytes.ReplaceAll(data, []byte(`"master"`), []byte(`"other"`))
 						}
-						data := fmt.Sprintf(`{"branch":{"S":%q},"bundles":{"S":"repo/bundles_old"}}`, branch)
-						_, _ = fmt.Fprintf(w, `{"Attributes":{"id":{"S":"bucket/repo"},"owner_token":%s,"expires_at":%s,"data":{"M":%s}}}`, request.ExpressionAttributeValues[":owner"], request.ExpressionAttributeValues[":expires"], data)
+						_, _ = fmt.Fprintf(w, `{"Attributes":{"id":{"S":"bucket/repo"},"owner_token":%s,"expires_at":%s,"data":%s}}`, request.ExpressionAttributeValues[":owner"], request.ExpressionAttributeValues[":expires"], data)
 						return
 					} else if request.UpdateExpression == "REMOVE #owner, #expires" {
 						releases++
@@ -141,19 +154,18 @@ func TestLeasePush(t *testing.T) {
 				}
 				switch r.Method {
 				case http.MethodHead:
-					w.Header().Set("X-Amz-Bucket-Region", "us-east-1")
 				case http.MethodGet:
 					if scenario == "bundles-missing" {
 						w.WriteHeader(http.StatusNotFound)
 						_, _ = io.WriteString(w, `<Error><Code>NoSuchKey</Code></Error>`)
 						return
 					}
-					_, _ = fmt.Fprintf(w, "%s..%s", zeroHash, base)
 				case http.MethodPut:
-					if strings.Contains(r.URL.Path, "/bundles_") {
+					if strings.Contains(r.URL.Path, "/manifests/") {
 						if scenario == "upload-failure" {
 							w.WriteHeader(http.StatusForbidden)
 							_, _ = io.WriteString(w, `<Error><Code>AccessDenied</Code><Message>upload rejected</Message></Error>`)
+							return
 						} else if scenario == "lease-loss" {
 							blockOnce.Do(func() { close(blocked) })
 							mu.Unlock()
@@ -163,6 +175,7 @@ func TestLeasePush(t *testing.T) {
 								t.Error("upload did not stop after lease loss")
 							}
 							mu.Lock()
+							return
 						}
 					}
 				case http.MethodDelete:
@@ -170,7 +183,10 @@ func TestLeasePush(t *testing.T) {
 				default:
 					t.Errorf("unexpected HTTP method %s", r.Method)
 					w.WriteHeader(http.StatusBadRequest)
+					return
 				}
+				r.Body = io.NopCloser(bytes.NewReader(body))
+				fixture.server.Config.Handler.ServeHTTP(w, r)
 			}))
 			defer server.Close()
 			childTimeout := "20s"
@@ -195,7 +211,7 @@ func TestLeasePush(t *testing.T) {
 			if commits != wantCommits || releases != wantReleases || deletes != wantDeletes {
 				t.Fatalf("commits/releases/deletes = %d/%d/%d, want %d/%d/%d\n%s", commits, releases, deletes, wantCommits, wantReleases, wantDeletes, output)
 			}
-			if wantCommits != 0 && !bytes.Contains(committed, []byte("repo/bundles_"+tip)) {
+			if wantCommits != 0 && !bytes.Contains(committed, []byte("repo/.remote-aws-v2/repos/1/manifests/"+tip)) {
 				t.Fatalf("wrong published metadata: %s", committed)
 			}
 			var messages []string

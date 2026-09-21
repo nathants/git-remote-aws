@@ -76,7 +76,7 @@ func TestBundleLibawsRemovalCompatibility(t *testing.T) {
 			}
 			fixture.mu.Lock()
 			defer fixture.mu.Unlock()
-			if fixture.commits != 1 || fixture.uploads != 2 || fixture.deletes != 1 || !bytes.Contains(fixture.data, []byte("repo/bundles_"+tip)) {
+			if fixture.commits != 1 || fixture.uploads != 2 || fixture.deletes != 1 || !bytes.Contains(fixture.data, []byte("repo/.remote-aws-v2/repos/1/manifests/"+tip)) {
 				t.Fatalf("extension changed publication layout: commits=%d uploads=%d deletes=%d data=%s", fixture.commits, fixture.uploads, fixture.deletes, fixture.data)
 			}
 			for key, body := range saved.Objects {
