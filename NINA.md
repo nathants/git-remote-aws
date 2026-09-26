@@ -163,8 +163,9 @@ local state, not a security boundary against someone who can rewrite it.
   Commit metadata only after every bundle and the complete manifest upload
   succeed. Commit cancels the lease context. Deferred cleanup uses bounded,
   independent `Release`, never writes a possibly modified payload, and preserves
-  the original push error. Ambiguous commits must not cause another payload write
-  or deletion of the previous manifest.
+  the original push error, naming a lost lease's cause before release. Ambiguous
+  commits must not cause another payload write or deletion of the previous
+  manifest.
 - One SIGINT/SIGTERM context spans initialization and the helper protocol loop,
   including idle input waits. Pass it through list/fetch/push; the lease context
   remains authoritative for protected work. Post-commit S3 cleanup uses the helper
@@ -198,8 +199,11 @@ local state, not a security boundary against someone who can rewrite it.
 - Ciphertext larger than 64 MiB uses sequential multipart uploads, normally with
   64 MiB parts that grow for exceptionally large files to respect S3's part limit.
   Retries replay only affected parts. Multipart is transport only: preserve
-  range names, shared codecs, and DynamoDB layout. Exact-tip retry preflight avoids
-  retransferring completed objects, though Git may recreate the plaintext bundle.
+  range names, shared codecs, and DynamoDB layout. Exact-tip retries check each
+  planned range before estimating or packing it; a completed range planned again,
+  with matching push tip and actual recipients, is neither repacked nor
+  retransferred. Changed estimates or sizes can plan other ranges and repack
+  their data. Pushes of other tips cannot reuse them.
   Never backfill/delete conflicting leftovers.
 - Abort only the owned multipart ID with a bounded independent context; preserve
   primary errors and completed objects on ambiguous completion. Abrupt termination

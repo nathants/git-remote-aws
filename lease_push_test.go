@@ -30,7 +30,7 @@ func TestLeasePush(t *testing.T) {
 		main()
 		return
 	}
-	for _, scenario := range []string{"commit", "upload-failure", "bundles-missing", "commit-unknown", "no-op", "lease-loss", "ancestry-loss", "policy-loss", "recipient-loss", "planning-loss", "commit-unknown-release-failure", "branch-failure-release-failure", "no-op-release-failure"} {
+	for _, scenario := range []string{"commit", "upload-failure", "bundles-missing", "commit-unknown", "no-op", "lease-loss", "commit-lease-loss", "ancestry-loss", "policy-loss", "recipient-loss", "planning-loss", "commit-unknown-release-failure", "branch-failure-release-failure", "no-op-release-failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			public := setupEphemeralKeys(t)
 			dir := t.TempDir()
@@ -134,17 +134,32 @@ func TestLeasePush(t *testing.T) {
 							_, _ = io.WriteString(w, `{"__type":"InternalServerError","message":"response lost"}`)
 							return
 						}
+						if scenario == "commit-lease-loss" {
+							// Hold the commit until a rejected renewal cancels it.
+							blockOnce.Do(func() { close(blocked) })
+							mu.Unlock()
+							select {
+							case <-r.Context().Done():
+							case <-time.After(15 * time.Second):
+								t.Error("commit did not stop after lease loss")
+							}
+							mu.Lock()
+							return
+						}
 					} else if command != "" {
 						if _, err := os.Stat(blockedPID); err == nil {
 							w.WriteHeader(http.StatusBadRequest)
 							_, _ = io.WriteString(w, `{"__type":"ConditionalCheckFailedException"}`)
 							return
 						}
-					} else if scenario == "lease-loss" {
+					} else if rejection := map[string]string{
+						"lease-loss":        `{"__type":"ConditionalCheckFailedException"}`,
+						"commit-lease-loss": `{"__type":"AccessDeniedException","message":"renewal permission revoked"}`,
+					}[scenario]; rejection != "" {
 						select {
 						case <-blocked:
 							w.WriteHeader(http.StatusBadRequest)
-							_, _ = io.WriteString(w, `{"__type":"ConditionalCheckFailedException"}`)
+							_, _ = io.WriteString(w, rejection)
 							return
 						default:
 						}
@@ -189,11 +204,8 @@ func TestLeasePush(t *testing.T) {
 				fixture.server.Config.Handler.ServeHTTP(w, r)
 			}))
 			defer server.Close()
-			childTimeout := "20s"
-			if command != "" {
-				childTimeout = "5s"
-			}
-			child := testHelperCommand(t, dir, server.URL, childTimeout)
+			// Loss arrives with the first renewal, well before the lease expires.
+			child := testHelperCommand(t, dir, server.URL, "20s")
 			child.Stdin = strings.NewReader("push refs/heads/master:refs/heads/master\n\n")
 			output, err := child.CombinedOutput()
 			wantSuccess := scenario == "commit" || scenario == "no-op"
@@ -205,7 +217,7 @@ func TestLeasePush(t *testing.T) {
 			wantCommits, wantReleases, wantDeletes := 0, 1, 0
 			if scenario == "commit" {
 				wantCommits, wantReleases, wantDeletes = 1, 0, 1
-			} else if strings.HasPrefix(scenario, "commit-unknown") {
+			} else if strings.HasPrefix(scenario, "commit-unknown") || scenario == "commit-lease-loss" {
 				wantCommits = 1
 			}
 			if commits != wantCommits || releases != wantReleases || deletes != wantDeletes {
@@ -221,6 +233,14 @@ func TestLeasePush(t *testing.T) {
 			if strings.HasPrefix(scenario, "branch-failure") {
 				messages = append(messages, "you cannot have multiple branches in a remote")
 			}
+			if scenario == "lease-loss" {
+				// Transport errors report only "context canceled"; name why.
+				messages = append(messages, "lease lost", "ConditionalCheckFailedException")
+			}
+			if scenario == "commit-lease-loss" {
+				// The canceled commit's ambiguity does not explain the loss.
+				messages = append(messages, "write outcome unknown", "lease lost", "renewal permission revoked")
+			}
 			if strings.HasSuffix(scenario, "release-failure") {
 				messages = append(messages, "release repository lease", "release rejected")
 			}
@@ -228,6 +248,10 @@ func TestLeasePush(t *testing.T) {
 				if !bytes.Contains(output, []byte(message)) {
 					t.Errorf("CLI lost error %q:\n%s", message, output)
 				}
+			}
+			// A commit's own ambiguous outcome also ends the lease; report it once.
+			if strings.HasPrefix(scenario, "commit-unknown") && bytes.Count(output, []byte("response lost")) != 1 {
+				t.Errorf("CLI repeated the commit failure as the lease cause:\n%s", output)
 			}
 		})
 	}

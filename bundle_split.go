@@ -42,7 +42,9 @@ type pushBundleBuilder struct {
 	ctx       context.Context
 	directory string
 	target    int64
-	consume   func(filename string) error
+	// reuse reports whether a completed range needs no packing or upload.
+	reuse   func(name string) (bool, error)
+	consume func(filename string) error
 }
 
 func (b *pushBundleBuilder) create(base, tip string) error {
@@ -98,6 +100,18 @@ func (b *pushBundleBuilder) createRange(base string, commits []string) error {
 		return err
 	}
 	tip := last(commits)
+	start := base
+	if start == "" {
+		start = strings.Repeat("0", len(tip))
+	}
+	name := start + ".." + tip
+	// Check each planned range before estimating or packing it, so a retry of
+	// the same push reuses a completed range it plans again. This does not
+	// freeze boundaries: a changed estimate or size setting can plan other
+	// ranges and repack data that a completed range already holds.
+	if reused, err := b.reuse(name); reused || err != nil {
+		return err
+	}
 	target := tip
 	if base != "" {
 		target = base + ".." + tip
@@ -119,11 +133,7 @@ func (b *pushBundleBuilder) createRange(base string, commits []string) error {
 			return b.splitRange(base, commits)
 		}
 	}
-	start := base
-	if start == "" {
-		start = strings.Repeat("0", len(tip))
-	}
-	filename := filepath.Join(b.directory, start+".."+tip)
+	filename := filepath.Join(b.directory, name)
 	fmt.Fprintln(os.Stderr, "git bundle:", filepath.Base(filename))
 	if err := createPinnedPushBundle(b.ctx, filename, base, tip); err != nil {
 		return err

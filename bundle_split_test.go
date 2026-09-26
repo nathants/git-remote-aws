@@ -10,12 +10,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/nathants/go-libsodium"
 )
 
 func commitBundleData(t *testing.T, dir, message string, size int) string {
@@ -188,10 +191,17 @@ func TestBundleSizedPushFailureAndRetry(t *testing.T) {
 	}
 	fixture := newMetadataFixture(t)
 	var puts atomic.Int32
+	// Hide a completed object from one existence check, as if another attempt
+	// finished it between the preflight and the conditional upload.
+	var hidden atomic.Pointer[string]
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPut && puts.Add(1) == 2 {
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = io.WriteString(w, `<Error><Code>AccessDenied</Code><Message>second bundle rejected</Message></Error>`)
+			return
+		}
+		if key := hidden.Load(); r.Method == http.MethodHead && key != nil && r.URL.Path == *key && hidden.CompareAndSwap(key, nil) {
+			w.WriteHeader(http.StatusNotFound)
 			return
 		}
 		fixture.server.Config.Handler.ServeHTTP(w, r)
@@ -211,8 +221,56 @@ func TestBundleSizedPushFailureAndRetry(t *testing.T) {
 		savedKey, savedCiphertext = key, append([]byte(nil), body...)
 	}
 	fixture.mu.Unlock()
-	if output, err := runMetadataHelper(t, dir, server.URL, push); err != nil || !strings.Contains(output, "reuse completed bundle") {
+	// A same-tip leftover encrypted to other keys must not be adopted, whether
+	// the retry finds it before packing or only through a conflicting upload.
+	otherPublic, _, err := libsodium.BoxKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := os.Create(filepath.Join(t.TempDir(), "other"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cipher.Close() }()
+	if err := encryptPushBundle(t.Context(), [][]byte{otherPublic}, io.NopCloser(strings.NewReader("other")), cipher); err != nil {
+		t.Fatal(err)
+	}
+	other, err := os.ReadFile(cipher.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.mu.Lock()
+	fixture.objects[savedKey] = other
+	fixture.mu.Unlock()
+	hidden.Store(&savedKey)
+	if output, err := runMetadataHelper(t, dir, server.URL, push); err == nil || !strings.Contains(output, "git bundle: "+filepath.Base(savedKey)) || !strings.Contains(output, "bundle recipient policy disagrees with ciphertext") {
+		t.Fatalf("upload conflict adopted a completed range for other recipients: %v\n%s", err, output)
+	}
+	// From here on, fail any retry that asks Git to pack the completed range.
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shim := t.TempDir()
+	packed := filepath.Join(shim, "packed")
+	script := fmt.Sprintf("#!/bin/sh\nif [ \"$1 $2\" = 'bundle create' ]; then\n\techo \"${3##*/}\" >> '%s'\n\t[ \"${3##*/}\" = '%s' ] && exit 97\nfi\nexec '%s' \"$@\"\n", packed, filepath.Base(savedKey), git)
+	if err := os.WriteFile(filepath.Join(shim, "git"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shim+":"+os.Getenv("PATH"))
+	if output, err := runMetadataHelper(t, dir, server.URL, push); err == nil || !strings.Contains(output, "bundle recipient policy disagrees with ciphertext") {
+		t.Fatalf("retry adopted a completed range for other recipients: %v\n%s", err, output)
+	}
+	fixture.mu.Lock()
+	fixture.objects[savedKey] = savedCiphertext
+	fixture.mu.Unlock()
+	output, err := runMetadataHelper(t, dir, server.URL, push)
+	if err != nil || !strings.Contains(output, "reuse completed bundle") {
 		t.Fatalf("same-tip retry did not reuse completed ciphertext: %v\n%s", err, output)
+	}
+	// The retry still packs the remaining ranges through the shim.
+	if ranges, err := os.ReadFile(packed); err != nil || len(ranges) == 0 || strings.Contains(string(ranges), filepath.Base(savedKey)) {
+		t.Fatalf("retry packing was not observed or repacked the completed range: %v\n%s", err, ranges)
 	}
 	fixture.mu.Lock()
 	if fixture.commits != 1 || !bytes.Equal(fixture.objects[savedKey], savedCiphertext) {
@@ -276,6 +334,7 @@ func TestBundleActualSizeRefinement(t *testing.T) {
 	}
 	count := 0
 	builder := pushBundleBuilder{ctx: t.Context(), directory: t.TempDir(), target: estimate}
+	builder.reuse = func(string) (bool, error) { return false, nil }
 	builder.consume = func(filename string) error {
 		count++
 		files, err := os.ReadDir(builder.directory)

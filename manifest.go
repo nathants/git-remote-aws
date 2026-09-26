@@ -321,6 +321,12 @@ func (clients *awsClients) bundleHeaderRange(ctx context.Context, bucket string,
 	return data, nil
 }
 
+// recipientFingerprint matches the key identifiers in bundle envelopes.
+func recipientFingerprint(key []byte) string {
+	fingerprint := blake2b.Sum512(key)
+	return hex.EncodeToString(fingerprint[:])
+}
+
 func compatibleRecipients(ref bundleRef, chains libsodium.KeyChains) bool {
 	if len(ref.Recipients) != len(chains) {
 		return false
@@ -329,8 +335,7 @@ func compatibleRecipients(ref bundleRef, chains libsodium.KeyChains) bool {
 	for _, chain := range chains {
 		found := false
 		for _, key := range chain {
-			fingerprint := blake2b.Sum512(key)
-			id := hex.EncodeToString(fingerprint[:])
+			id := recipientFingerprint(key)
 			if slices.Contains(ref.Recipients, id) && !matched[id] {
 				matched[id], found = true, true
 				break

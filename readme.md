@@ -108,7 +108,9 @@ git config remote-aws.bundleSize 256m
 
 This is a soft target: an indivisible increment can exceed it. Allow temporary
 disk space for both plaintext and ciphertext of the largest bundle. Existing
-bundles are reused without resizing. See [sizing and upload details](NINA.md#bundle-sizing-and-uploads).
+bundles are reused without resizing. If a push fails, rerun it: a retry of the
+same commit normally reuses bundles already uploaded, though changing the size
+setting or local packing in between can repack them. See [sizing and upload details](NINA.md#bundle-sizing-and-uploads).
 
 ## Recovery
 

@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -200,29 +201,40 @@ func (clients *awsClients) push(requestCtx context.Context, table, bucket, prefi
 	lease, repoMeta, err := dynamolock.Lock[RepoMeta](lockCtx, clients.dynamodb, &dynamolock.LockInput{
 		Table:             table,
 		ID:                bucket + "/" + prefix,
-		HeartbeatMaxAge:   10 * time.Second,
-		HeartbeatInterval: 1 * time.Second,
+		HeartbeatMaxAge:   60 * time.Second,
+		HeartbeatInterval: 5 * time.Second,
 	})
 	if err != nil {
 		panic(err)
 	}
+	ctx := lease.Context()
+	// Report the push failure, then why the lease ended, then any release
+	// failure. Work interrupted by lease loss reports only "context canceled",
+	// so name the loss, such as a failed renewal, unless the failure already
+	// reports it or caused it (an ambiguous commit). Normal release, including
+	// after commit, is not a loss.
 	defer func() {
+		var errs []error
+		if value := recover(); value != nil {
+			err, ok := value.(error)
+			if !ok {
+				err = fmt.Errorf("%v", value)
+			}
+			errs = append(errs, err)
+			cause := context.Cause(ctx)
+			if errors.Is(cause, dynamolock.ErrLeaseLost) && !errors.Is(err, dynamolock.ErrLeaseLost) && !errors.Is(cause, err) {
+				errs = append(errs, fmt.Errorf("repository lease: %w", cause))
+			}
+		}
 		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := lease.Release(cleanup); err != nil {
-			err = fmt.Errorf("release repository lease: %w", err)
-			// Cleanup must not hide the push failure, especially an ambiguous commit.
-			if value := recover(); value != nil {
-				original, ok := value.(error)
-				if !ok {
-					original = fmt.Errorf("%v", value)
-				}
-				err = errors.Join(original, err)
-			}
+			errs = append(errs, fmt.Errorf("release repository lease: %w", err))
+		}
+		if err := errors.Join(errs...); err != nil {
 			panic(err)
 		}
 	}()
-	ctx := lease.Context()
 	if repoMeta == nil {
 		repoMeta = &RepoMeta{}
 	}
@@ -328,20 +340,36 @@ func (clients *awsClients) push(requestCtx context.Context, table, bucket, prefi
 		if err != nil {
 			panic(err)
 		}
+		// Every range, whether uploaded now or completed by an earlier attempt of
+		// this push, must be encrypted to exactly the keys this push uses.
+		var fingerprints []string
+		for _, recipient := range recipients {
+			fingerprints = append(fingerprints, recipientFingerprint(recipient))
+		}
+		slices.Sort(fingerprints)
+		record := func(name string) error {
+			ref, err := clients.inspectBundle(ctx, bucket, bundleRef{Range: name, Key: repo.bundleKey(hash, name), Recipients: fingerprints})
+			if err != nil {
+				return err
+			}
+			bundles = append(bundles, ref)
+			return nil
+		}
 		builder := pushBundleBuilder{
 			ctx: ctx, directory: tempdir, target: bundleSize,
+			reuse: func(name string) (bool, error) {
+				found, err := clients.completedPushBundle(ctx, bucket, repo.bundleKey(hash, name), hash)
+				if !found || err != nil {
+					return false, err
+				}
+				return true, record(name)
+			},
 			consume: func(filename string) error {
 				name := path.Base(filename)
-				key := repo.bundleKey(hash, name)
-				if err := clients.encryptAndUploadBundle(ctx, bucket, key, hash, filename, recipients); err != nil {
+				if err := clients.encryptAndUploadBundle(ctx, bucket, repo.bundleKey(hash, name), hash, filename, recipients); err != nil {
 					return err
 				}
-				ref, err := clients.inspectBundle(ctx, bucket, bundleRef{Range: name, Key: key})
-				if err != nil {
-					return err
-				}
-				bundles = append(bundles, ref)
-				return nil
+				return record(name)
 			},
 		}
 		if err := builder.create(base, hash); err != nil {
