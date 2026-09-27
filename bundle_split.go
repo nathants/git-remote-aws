@@ -48,19 +48,27 @@ type pushBundleBuilder struct {
 }
 
 func (b *pushBundleBuilder) create(base, tip string) error {
+	commits, err := pushBundleCommits(b.ctx, base, tip)
+	if err != nil {
+		return err
+	}
+	return b.createRange(base, commits)
+}
+
+func pushBundleCommits(ctx context.Context, base, tip string) ([]string, error) {
 	// Boundaries form one ancestry chain. Merged side histories travel with the
 	// first-parent step that introduces them, never as unrelated bundle heads.
 	target := tip
 	if base != "" {
 		target = base + ".." + tip
 	}
-	output, err := gitCommand(b.ctx, "rev-list", "--first-parent", "--reverse", target).Output()
+	output, err := gitCommand(ctx, "rev-list", "--first-parent", "--reverse", target).Output()
 	if err != nil {
-		return fmt.Errorf("plan Git bundle boundaries: %w", err)
+		return nil, fmt.Errorf("plan Git bundle boundaries: %w", err)
 	}
 	commits := strings.Fields(string(output))
 	if len(commits) == 0 || last(commits) != tip {
-		return fmt.Errorf("no complete ancestry path for Git bundle %s", target)
+		return nil, fmt.Errorf("no complete ancestry path for Git bundle %s", target)
 	}
 	if base != "" {
 		// Keep only the suffix containing the remote base. Combining Git's
@@ -74,9 +82,9 @@ func (b *pushBundleBuilder) create(base, tip string) error {
 			if low == 0 {
 				middle = 0
 			}
-			err := gitCommand(b.ctx, "merge-base", "--is-ancestor", base, commits[middle]).Run()
-			if cause := context.Cause(b.ctx); cause != nil {
-				return cause
+			err := gitCommand(ctx, "merge-base", "--is-ancestor", base, commits[middle]).Run()
+			if cause := context.Cause(ctx); cause != nil {
+				return nil, cause
 			}
 			var exit *exec.ExitError
 			if err == nil {
@@ -84,15 +92,15 @@ func (b *pushBundleBuilder) create(base, tip string) error {
 			} else if errors.As(err, &exit) && exit.ExitCode() == 1 {
 				low = middle + 1
 			} else {
-				return fmt.Errorf("check Git bundle boundary ancestry: %w", err)
+				return nil, fmt.Errorf("check Git bundle boundary ancestry: %w", err)
 			}
 		}
 		if low == len(commits) {
-			return fmt.Errorf("no bundle boundary contains remote base %s", base)
+			return nil, fmt.Errorf("no bundle boundary contains remote base %s", base)
 		}
 		commits = commits[low:]
 	}
-	return b.createRange(base, commits)
+	return commits, nil
 }
 
 func (b *pushBundleBuilder) createRange(base string, commits []string) error {
@@ -105,10 +113,9 @@ func (b *pushBundleBuilder) createRange(base string, commits []string) error {
 		start = strings.Repeat("0", len(tip))
 	}
 	name := start + ".." + tip
-	// Check each planned range before estimating or packing it, so a retry of
-	// the same push reuses a completed range it plans again. This does not
-	// freeze boundaries: a changed estimate or size setting can plan other
-	// ranges and repack data that a completed range already holds.
+	// The contiguous completed prefix has already been removed from this work.
+	// Also reuse any disconnected leftover that a newly planned range matches,
+	// without estimating or packing it.
 	if reused, err := b.reuse(name); reused || err != nil {
 		return err
 	}

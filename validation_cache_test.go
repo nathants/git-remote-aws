@@ -16,6 +16,11 @@ import (
 
 func TestBundleValidationCacheReuse(t *testing.T) {
 	dir, fixture, _ := namespaceSource(t, "sha1")
+	// Upload validation now seeds the cache. Start cold to exercise both paths.
+	cache := runAtOut(dir, "git", "rev-parse", "--path-format=absolute", "--git-path", "git-remote-aws/validation-v2")
+	if err := os.RemoveAll(cache); err != nil {
+		t.Fatal(err)
+	}
 	fixture.mu.Lock()
 	source := fixtureManifest(t, fixture)
 	fixture.objectHeads, fixture.headerReads = nil, nil
@@ -27,7 +32,7 @@ func TestBundleValidationCacheReuse(t *testing.T) {
 		fixture.mu.Lock()
 		for _, ref := range source.Bundles {
 			path := "/bucket/" + ref.Key
-			wantRanges := 2
+			wantRanges := 1
 			if i > 0 {
 				wantRanges = 0
 			}
@@ -50,6 +55,9 @@ func TestBundleValidationCacheSafety(t *testing.T) {
 			ref := fixtureManifest(t, fixture).Bundles[0]
 			fixture.mu.Unlock()
 			first := clients.newBundleValidation(t.Context(), "bucket")
+			if err := os.RemoveAll(first.directory); err != nil {
+				t.Fatal(err)
+			}
 			if _, err := first.inspect(t.Context(), ref); err != nil {
 				t.Fatal(err)
 			}
@@ -58,7 +66,7 @@ func TestBundleValidationCacheSafety(t *testing.T) {
 				t.Fatalf("cache not persisted: %v %v", files, err)
 			}
 			wantError := false
-			wantRanges := 2
+			wantRanges := 1
 			switch scenario {
 			case "missing-cache":
 				err = os.Remove(files[0])

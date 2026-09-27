@@ -14,24 +14,6 @@ import (
 	"github.com/aws/smithy-go"
 )
 
-// A retry of the same push reuses its completed ciphertext rather than packing
-// and transferring it again. Never adopt another push's object at that key.
-func (clients *awsClients) completedPushBundle(ctx context.Context, bucket, key, pushTip string) (bool, error) {
-	existing, err := clients.s3.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)})
-	var missing *s3types.NotFound
-	if errors.As(err, &missing) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("inspect upload destination %s: %w", key, err)
-	}
-	if existing.Metadata[bundlePushTipMetadata] != pushTip || aws.ToInt64(existing.ContentLength) <= 0 {
-		return false, fmt.Errorf("refusing existing bundle with different or unknown push tip: %s", key)
-	}
-	fmt.Fprintln(os.Stderr, "reuse completed bundle from the same push:", key)
-	return true, nil
-}
-
 func (clients *awsClients) encryptAndUploadBundle(ctx context.Context, bucket, key, pushTip, filename string, recipients [][]byte) error {
 	plain, err := os.Open(filename)
 	if err != nil {
@@ -181,6 +163,6 @@ func (clients *awsClients) bundleUploadResult(ctx context.Context, bucket, key, 
 	if out.Metadata[bundlePushTipMetadata] != pushTip || aws.ToInt64(out.ContentLength) <= 0 {
 		return fmt.Errorf("refusing to overwrite existing bundle s3://%s/%s with a different or unknown push tip; inspect incomplete pushes: %w", bucket, key, uploadErr)
 	}
-	fmt.Fprintln(os.Stderr, "reuse completed bundle from the same push:", key)
+	// The caller still validates identity and recipients before recording it.
 	return nil
 }

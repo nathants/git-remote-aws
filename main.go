@@ -347,8 +347,29 @@ func (clients *awsClients) push(requestCtx context.Context, table, bucket, prefi
 			fingerprints = append(fingerprints, recipientFingerprint(recipient))
 		}
 		slices.Sort(fingerprints)
+		validation := clients.newBundleValidation(ctx, bucket)
+		completed, err := clients.listPushBundles(ctx, bucket, repo, hash, fingerprints)
+		if err != nil {
+			panic(err)
+		}
+		resumed, err := completedPushPrefix(ctx, base, hash, completed)
+		if err != nil {
+			panic(err)
+		}
+		resumed, err = validation.inspectPushPrefix(ctx, hash, resumed)
+		if err != nil {
+			panic(err)
+		}
+		bundles = append(bundles, resumed...)
+		if len(resumed) != 0 {
+			base = hashEnd(last(resumed).Range)
+		}
 		record := func(name string) error {
-			ref, err := clients.inspectBundle(ctx, bucket, bundleRef{Range: name, Key: repo.bundleKey(hash, name), Recipients: fingerprints})
+			ref, found := completed[name]
+			if !found {
+				ref = bundleRef{Range: name, Key: repo.bundleKey(hash, name), Recipients: fingerprints}
+			}
+			ref, err := validation.inspectPush(ctx, ref, hash)
 			if err != nil {
 				return err
 			}
@@ -358,11 +379,14 @@ func (clients *awsClients) push(requestCtx context.Context, table, bucket, prefi
 		builder := pushBundleBuilder{
 			ctx: ctx, directory: tempdir, target: bundleSize,
 			reuse: func(name string) (bool, error) {
-				found, err := clients.completedPushBundle(ctx, bucket, repo.bundleKey(hash, name), hash)
-				if !found || err != nil {
+				if _, found := completed[name]; !found {
+					return false, nil
+				}
+				if err := record(name); err != nil {
 					return false, err
 				}
-				return true, record(name)
+				fmt.Fprintln(os.Stderr, "reuse completed bundle from the same push:", repo.bundleKey(hash, name))
+				return true, nil
 			},
 			consume: func(filename string) error {
 				name := path.Base(filename)
@@ -372,8 +396,10 @@ func (clients *awsClients) push(requestCtx context.Context, table, bucket, prefi
 				return record(name)
 			},
 		}
-		if err := builder.create(base, hash); err != nil {
-			panic(err)
+		if base != hash {
+			if err := builder.create(base, hash); err != nil {
+				panic(err)
+			}
 		}
 	}
 	oldBundlesS3Key := repoMeta.BundlesS3Key

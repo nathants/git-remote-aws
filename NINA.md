@@ -145,10 +145,12 @@ legacy lists. Follow the [upgrade procedure](#upgrading-existing-installations).
 ### Validation cache
 
 Deduplicate inspection of distinct objects within each adoption/promotion
-operation; conflicting descriptors stay fatal. Persist successful envelope checks
-under Git-resolved `git-remote-aws/validation-v2/` metadata, including linked
-worktrees. Every new operation still HEADs each distinct object. Cache hits require
-unchanged resolved endpoint, bucket, key, range, codec, ETag, and size.
+operation; conflicting descriptors stay fatal. Persist successful envelope checks,
+including post-upload validation, under Git-resolved
+`git-remote-aws/validation-v2/` metadata, including linked worktrees. Every new
+operation still HEADs each distinct object. Cache hits require unchanged resolved
+endpoint, bucket, key, range, codec, ETag, and size. Known recipient policies permit
+one bounded envelope GET; still verify the stored count and fingerprints.
 
 Missing, corrupt, or inaccessible local entries are misses; remote corruption or
 identity changes remain errors. Writes are atomic and best-effort. Deleting the
@@ -198,12 +200,15 @@ local state, not a security boundary against someone who can rewrite it.
 - Ciphertext larger than 64 MiB uses sequential multipart uploads, normally with
   64 MiB parts that grow for exceptionally large files to respect S3's part limit.
   Retries replay only affected parts. Multipart is transport only: preserve
-  range names, shared codecs, and DynamoDB layout. Exact-tip retries check each
-  planned range before estimating or packing it; a completed range planned again,
-  with matching push tip and actual recipients, is neither repacked nor
-  retransferred. Changed estimates or sizes can plan other ranges and repack
-  their data. Pushes of other tips cannot reuse them.
-  Never backfill/delete conflicting leftovers.
+  range names, shared codecs, and DynamoDB layout.
+- Exact-tip retries list only that push's bundle prefix, then retain the longest
+  contiguous completed prefix, preferring fewer bundles and stable key ordering.
+  Completed boundaries remain immutable when size settings or packing change;
+  only new ranges use the new target. Listing is not validation: require fresh
+  size/ETag and push-tip checks plus actual recipients before reuse. Validate with
+  at most eight workers; cancel and join all on failure before publication.
+  Pushes of other tips cannot reuse incomplete leftovers. Never overwrite or
+  delete conflicting or unselected leftovers.
 - Abort only the owned multipart ID with a bounded independent context; preserve
   primary errors and completed objects on ambiguous completion. Abrupt termination
   or uncertain initiation can leave incomplete uploads for administrative cleanup.

@@ -191,8 +191,8 @@ func TestBundleSizedPushFailureAndRetry(t *testing.T) {
 	}
 	fixture := newMetadataFixture(t)
 	var puts atomic.Int32
-	// Hide a completed object from one existence check, as if another attempt
-	// finished it between the preflight and the conditional upload.
+	// Hide a completed object from one listing, as if another attempt finished
+	// it between discovery and the conditional upload.
 	var hidden atomic.Pointer[string]
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPut && puts.Add(1) == 2 {
@@ -200,8 +200,8 @@ func TestBundleSizedPushFailureAndRetry(t *testing.T) {
 			_, _ = io.WriteString(w, `<Error><Code>AccessDenied</Code><Message>second bundle rejected</Message></Error>`)
 			return
 		}
-		if key := hidden.Load(); r.Method == http.MethodHead && key != nil && r.URL.Path == *key && hidden.CompareAndSwap(key, nil) {
-			w.WriteHeader(http.StatusNotFound)
+		if key := hidden.Load(); key != nil && r.Method == http.MethodGet && r.URL.Query().Get("list-type") == "2" && r.URL.Query().Get("prefix") == strings.TrimPrefix(filepath.Dir(*key)+"/", "/bucket/") && hidden.CompareAndSwap(key, nil) {
+			_, _ = io.WriteString(w, `<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>`)
 			return
 		}
 		fixture.server.Config.Handler.ServeHTTP(w, r)

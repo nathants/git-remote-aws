@@ -242,19 +242,7 @@ func (clients *awsClients) putManifest(ctx context.Context, bucket string, repo 
 	return key, err
 }
 
-// Header fingerprints describe actual ciphertext recipients, including legacy
-// pushes whose uncommitted policy cannot be reconstructed from a boundary commit.
-// This reads only the box envelope, not the encrypted Git payload. Authentication
-// and complete Git connectivity are checked by the common fetch path.
-func (clients *awsClients) inspectBundle(ctx context.Context, bucket string, ref bundleRef) (bundleRef, error) {
-	ref, _, err := clients.headBundle(ctx, bucket, ref)
-	if err != nil {
-		return ref, err
-	}
-	return clients.readBundleRecipients(ctx, bucket, ref)
-}
-
-func (clients *awsClients) headBundle(ctx context.Context, bucket string, ref bundleRef) (bundleRef, string, error) {
+func (clients *awsClients) headBundle(ctx context.Context, bucket string, ref bundleRef, pushTip string) (bundleRef, string, error) {
 	out, err := clients.s3.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: aws.String(ref.Key)})
 	if err != nil {
 		return ref, "", fmt.Errorf("inspect bundle %s: %w", ref.Key, err)
@@ -262,6 +250,9 @@ func (clients *awsClients) headBundle(ctx context.Context, bucket string, ref bu
 	size, etag := aws.ToInt64(out.ContentLength), aws.ToString(out.ETag)
 	if size <= 0 || etag == "" || ref.Size != 0 && ref.Size != size || ref.ETag != "" && ref.ETag != etag {
 		return ref, "", fmt.Errorf("bundle identity changed or is missing: %s", ref.Key)
+	}
+	if pushTip != "" && out.Metadata[bundlePushTipMetadata] != pushTip {
+		return ref, "", fmt.Errorf("refusing existing bundle with different or unknown push tip: %s", ref.Key)
 	}
 	ref.Size, ref.ETag = size, etag
 	// Scope the cache to the actual resolved S3 request, not just a bucket name.
@@ -274,23 +265,42 @@ func (clients *awsClients) headBundle(ctx context.Context, bucket string, ref bu
 	return ref, identity, nil
 }
 
+// Header fingerprints describe actual ciphertext recipients, including legacy
+// pushes whose uncommitted policy cannot be reconstructed from a boundary commit.
+// This reads only the box envelope, not the encrypted Git payload. Authentication
+// and complete Git connectivity are checked by the common fetch path.
 func (clients *awsClients) readBundleRecipients(ctx context.Context, bucket string, ref bundleRef) (bundleRef, error) {
 	recordedRecipients := ref.Recipients
 	ref.Recipients = nil
-	countBytes, err := clients.bundleHeaderRange(ctx, bucket, ref, 0, 4)
-	if err != nil {
-		return ref, err
+	count := len(recordedRecipients)
+	if count == 0 {
+		countBytes, err := clients.bundleHeaderRange(ctx, bucket, ref, 0, 4)
+		if err != nil {
+			return ref, err
+		}
+		count = int(binary.LittleEndian.Uint32(countBytes))
 	}
-	count := binary.LittleEndian.Uint32(countBytes)
 	// These are the retained libsodium box-envelope wire constants: 64-byte
 	// BLAKE2b fingerprint, 48-byte sealed-box overhead, 32-byte stream key.
 	const recordSize = 64 + 48 + 32
-	if count == 0 || count > 1<<16 || int64(4+count*(4+recordSize)) >= ref.Size {
+	if count <= 0 || count > 1<<16 || int64(4+count*(4+recordSize)) >= ref.Size {
 		return ref, fmt.Errorf("invalid encrypted recipient count for %s", ref.Key)
 	}
-	header, err := clients.bundleHeaderRange(ctx, bucket, ref, 4, int64(count)*(4+recordSize))
+	offset, size := int64(4), int64(count)*(4+recordSize)
+	if len(recordedRecipients) != 0 {
+		// A known policy bounds the whole envelope in one conditional read.
+		// It is an expectation, not authority: verify the stored count too.
+		offset, size = 0, size+4
+	}
+	header, err := clients.bundleHeaderRange(ctx, bucket, ref, offset, size)
 	if err != nil {
 		return ref, err
+	}
+	if len(recordedRecipients) != 0 {
+		if binary.LittleEndian.Uint32(header) != uint32(count) {
+			return ref, fmt.Errorf("bundle recipient policy disagrees with ciphertext: %s", ref.Key)
+		}
+		header = header[4:]
 	}
 	for offset := 0; offset < len(header); offset += 4 + recordSize {
 		if binary.LittleEndian.Uint32(header[offset:]) != recordSize {

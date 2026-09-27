@@ -174,6 +174,7 @@ func newMetadataFixture(t *testing.T) *metadataFixture {
 				type entry struct {
 					Key  string
 					Size int
+					ETag string
 				}
 				result := struct {
 					XMLName               xml.Name `xml:"ListBucketResult"`
@@ -186,7 +187,7 @@ func newMetadataFixture(t *testing.T) *metadataFixture {
 					result.NextContinuationToken = strconv.Itoa(end)
 				}
 				for _, key := range keys[start:end] {
-					result.Contents = append(result.Contents, entry{strings.TrimPrefix(key, "/bucket/"), len(fixture.objects[key])})
+					result.Contents = append(result.Contents, entry{strings.TrimPrefix(key, "/bucket/"), len(fixture.objects[key]), fixtureETag(fixture.objects[key])})
 				}
 				if err := xml.NewEncoder(w).Encode(result); err != nil {
 					t.Error(err)

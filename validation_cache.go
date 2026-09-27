@@ -14,8 +14,8 @@ import (
 	"syscall"
 )
 
-// A validation belongs to one adoption/promotion operation, not a long-lived
-// client. Even a persistent hit requires a fresh HEAD in each operation.
+// A validation belongs to one operation, not a long-lived client. Even a
+// persistent hit requires a fresh HEAD in each operation.
 type bundleValidation struct {
 	clients           *awsClients
 	bucket, directory string
@@ -37,7 +37,19 @@ func (validation *bundleValidation) inspect(ctx context.Context, ref bundleRef) 
 	if previous, ok := validation.inspected[ref.Key]; ok {
 		return checkedBundleDescriptor(ref, previous)
 	}
-	headed, identity, err := validation.clients.headBundle(ctx, validation.bucket, ref)
+	checked, err := validation.inspectPush(ctx, ref, "")
+	if err != nil {
+		return ref, err
+	}
+	validation.inspected[ref.Key] = checked
+	return checkedBundleDescriptor(ref, checked)
+}
+
+// inspectPush always verifies fresh identity (and optional push-tip metadata).
+// Unlike inspect, it has no shared in-memory map and can validate distinct
+// objects concurrently. Persistent entries are still atomically replaced.
+func (validation *bundleValidation) inspectPush(ctx context.Context, ref bundleRef, pushTip string) (bundleRef, error) {
+	headed, identity, err := validation.clients.headBundle(ctx, validation.bucket, ref, pushTip)
 	if err != nil {
 		return ref, err
 	}
@@ -49,12 +61,7 @@ func (validation *bundleValidation) inspect(ctx context.Context, ref bundleRef) 
 		}
 		validation.store(identity, cached)
 	}
-	checked, err := checkedBundleDescriptor(ref, cached)
-	if err != nil {
-		return ref, err
-	}
-	validation.inspected[ref.Key] = cached
-	return checked, nil
+	return checkedBundleDescriptor(ref, cached)
 }
 
 func checkedBundleDescriptor(want, actual bundleRef) (bundleRef, error) {
