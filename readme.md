@@ -137,4 +137,7 @@ git-remote-aws --decrypt < ciphertext
 ## Development
 
 Run `GOTOOLCHAIN=local bash bin/check.sh` for analysis and cloud-free race tests.
+Compatibility tests build helpers from pinned historical commits with their own
+module graphs, so run tests in a normal clone: shallow clones fail them, and the
+first run needs module downloads or a warm module cache.
 See [NINA.md](NINA.md#validation) for prerequisites and live AWS tests.

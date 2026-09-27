@@ -4,8 +4,7 @@ Root documentation is limited to [readme.md](readme.md) for users and this file
 for implementation contracts, operations, and validation. Keep the README's
 quick-start path concise. Before changing an area, read its corresponding
 sections below; for recipient keys/keygen, also read the
-[recipient policy](readme.md#recipients-and-rotation). Before regenerating stored-data
-fixtures, read [their provenance](testdata/README.md).
+[recipient policy](readme.md#recipients-and-rotation).
 
 ## Setup and permissions
 
@@ -296,8 +295,9 @@ is a separate administrative action; stop writers before doing so.
   `GIT_REMOTE_AWS_TEST_ACCOUNT`, `GIT_REMOTE_AWS_TEST_BUCKET`, and
   `GIT_REMOTE_AWS_TEST_TABLE`. Use an independently known scratch account and
   disposable, pre-provisioned resources: a versioned S3 bucket and a DynamoDB
-  table with string partition key `id`. Never use production resources or
-  go-dynamolock's reusable test table.
+  table with string partition key `id`. Set `AWS_REGION` to their region; tests
+  verify the account, bucket region, and table before any helper runs with
+  `ensure=y`. Never use production resources or go-dynamolock's reusable test table.
 - Test cleanup permanently deletes versions and delete markers within owned UUID
   namespaces. It needs `s3:ListBucketVersions`, `s3:GetObjectVersion`, and
   `s3:DeleteObjectVersion` in addition to helper permissions. Confirm cleanup,
@@ -311,14 +311,14 @@ is a separate administrative action; stop writers before doing so.
 
 ### Historical compatibility
 
-- Set `GIT_REMOTE_AWS_TEST_OLD_BINARY` to an independently built pre-keychain
-  helper using go-libsodium `v0.0.0-20260502104057-4e1a79aae4f3`. Without that
-  artifact, historical-binary compatibility tests are skipped. These tests
-  migrate metadata between old-helper writes and new-helper reads, and verify
-  that old encrypted bundle ETags survive cloning and rotation.
-- Cloud-free namespace tests use real Git bundles in both object formats and
-  retained legacy ciphertext fixtures. They cover recipient rotation/replacement,
+- Old data must come from old code: tests build helpers on demand from the
+  revisions pinned in `historical_test.go`, each with its own module graph.
+  Never patch those trees, update their dependencies, substitute newer code, or
+  check in generated fixtures; if a pinned revision stops building, discuss it.
+  Offline generation must reach only the scripted provider.
+- Keep covering legacy histories in both object formats that are read, promoted,
+  extended, and reused without rewriting ciphertext, and live pre-keychain full
+  and incremental pushes with an untracked recipient file through metadata
+  migration, clone, rotation, incomplete-key rejection, and unchanged old ETags.
+- Cloud-free namespace tests also cover recipient rotation/replacement,
   corruption/gaps, pagination, alias collisions, lost pointers, and S3-only recovery.
-- Read [fixture provenance and regeneration](testdata/README.md) before changing
-  stored-data fixtures. Use the retained pre-removal producer, never current
-  production code, to regenerate them.

@@ -386,3 +386,53 @@ func TestLeaseAWSWaitCancellation(t *testing.T) {
 		t.Fatalf("table waiter ignored cancellation: %v", err)
 	}
 }
+
+func TestLeaseAWSScratchPreflight(t *testing.T) {
+	for _, test := range []struct{ name, account, bucketRegion, table, want string }{
+		{"verified", "123456789012", "ap-southeast-1", "table", ""},
+		{"wrong account", "210987654321", "ap-southeast-1", "table", "wrong aws account"},
+		{"wrong region", "123456789012", "us-west-2", "table", "scratch bucket"},
+		{"missing table", "123456789012", "ap-southeast-1", "missing", "scratch table"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Header.Get("X-Amz-Target") == "DynamoDB_20120810.DescribeTable":
+					body, _ := io.ReadAll(r.Body)
+					w.Header().Set("Content-Type", "application/x-amz-json-1.0")
+					if !strings.Contains(string(body), `"TableName":"table"`) {
+						w.WriteHeader(http.StatusBadRequest)
+						_, _ = io.WriteString(w, `{"__type":"com.amazonaws.dynamodb.v20120810#ResourceNotFoundException","message":"Requested resource not found"}`)
+						return
+					}
+					_, _ = io.WriteString(w, `{"Table":{"TableName":"table","TableStatus":"ACTIVE"}}`)
+				case r.Method == http.MethodHead && r.URL.Path == "/bucket":
+					// S3 names a bucket's region and redirects requests sent elsewhere.
+					w.Header().Set("X-Amz-Bucket-Region", test.bucketRegion)
+					if test.bucketRegion != "ap-southeast-1" {
+						w.WriteHeader(http.StatusMovedPermanently)
+					}
+				case r.Method == http.MethodPost:
+					_, _ = io.WriteString(w, `<GetCallerIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/"><GetCallerIdentityResult><Account>123456789012</Account><Arn>arn:aws:iam::123456789012:user/test</Arn><UserId>test</UserId></GetCallerIdentityResult></GetCallerIdentityResponse>`)
+				default:
+					t.Errorf("unexpected preflight request: %s %s", r.Method, r.URL)
+					w.WriteHeader(http.StatusBadRequest)
+				}
+			}))
+			defer server.Close()
+			for key, value := range map[string]string{
+				"AWS_ACCESS_KEY_ID": "test", "AWS_SECRET_ACCESS_KEY": "test", "AWS_SESSION_TOKEN": "",
+				"AWS_REGION": "ap-southeast-1", "AWS_ENDPOINT_URL": "", "AWS_ENDPOINT_URL_STS": server.URL,
+				"AWS_ENDPOINT_URL_S3": server.URL, "AWS_ENDPOINT_URL_DYNAMODB": server.URL,
+				"AWS_CONFIG_FILE": "/dev/null", "AWS_SHARED_CREDENTIALS_FILE": "/dev/null", "AWS_PROFILE": "",
+				"AWS_EC2_METADATA_DISABLED": "true", "AWS_IGNORE_CONFIGURED_ENDPOINT_URLS": "false",
+			} {
+				t.Setenv(key, value)
+			}
+			err := verifyScratchResources(t.Context(), test.account, "bucket", test.table)
+			if test.want == "" && err != nil || test.want != "" && (err == nil || !strings.Contains(err.Error(), test.want)) {
+				t.Fatalf("preflight error %v, want %q", err, test.want)
+			}
+		})
+	}
+}

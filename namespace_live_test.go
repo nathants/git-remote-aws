@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,14 +36,7 @@ func TestNamespaceLegacyAdoptionAWS(t *testing.T) {
 	defer cleanupAws(table, bucket, prefix)
 	defer cleanupAws(table, bucket, prefix+"/2")
 	clients := testAWSClients()
-	data, err := os.ReadFile(filepath.Join("testdata", "libaws-sha256.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var saved libawsCompatibilityFixture
-	if err := json.Unmarshal(data, &saved); err != nil {
-		t.Fatal(err)
-	}
+	saved := preLibawsFixture(t, "sha256")
 	t.Setenv("GIT_REMOTE_AWS_SECRETKEY", saved.SecretKey)
 	t.Setenv("GIT_REMOTE_AWS_SECRETKEY_FILE", "")
 	t.Setenv("GIT_REMOTE_AWS_SECRETKEY_CMD", "")

@@ -166,14 +166,7 @@ func TestBundleNamespaceRejectsBrokenAdoption(t *testing.T) {
 func TestBundleLegacyPromotionWithoutUpload(t *testing.T) {
 	for _, format := range []string{"sha1", "sha256"} {
 		t.Run(format, func(t *testing.T) {
-			data, err := os.ReadFile(filepath.Join("testdata", "libaws-"+format+".json"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			var saved libawsCompatibilityFixture
-			if err := json.Unmarshal(data, &saved); err != nil {
-				t.Fatal(err)
-			}
+			saved := preLibawsFixture(t, format)
 			t.Setenv("GIT_REMOTE_AWS_SECRETKEY", saved.SecretKey)
 			t.Setenv("GIT_REMOTE_AWS_SECRETKEY_FILE", "")
 			t.Setenv("GIT_REMOTE_AWS_SECRETKEY_CMD", "")

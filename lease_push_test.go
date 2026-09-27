@@ -262,7 +262,7 @@ func testHelperCommand(t *testing.T, dir, endpoint, timeout string) *exec.Cmd {
 	child := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestLeasePush$", "-test.timeout="+timeout)
 	child.WaitDelay = time.Second
 	child.Dir = dir
-	child.Env = append(os.Environ(),
+	child.Env = append(testEnvironment(),
 		"GIT_REMOTE_AWS_PUSH_CHILD=1", "GIT_DIR=.git", "ensure=",
 		"AWS_ACCESS_KEY_ID=test", "AWS_SECRET_ACCESS_KEY=test", "AWS_SESSION_TOKEN=",
 		"AWS_REGION=us-east-1", "AWS_DEFAULT_REGION=us-east-1", "AWS_EC2_METADATA_DISABLED=true",

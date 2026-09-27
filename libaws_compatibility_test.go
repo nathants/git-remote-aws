@@ -2,38 +2,14 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
-type libawsCompatibilityFixture struct {
-	Producer  string            `json:"producer"`
-	Format    string            `json:"git_object_format"`
-	Tip       string            `json:"tip"`
-	PublicKey string            `json:"public_key"`
-	SecretKey string            `json:"test_only_secret_key"`
-	Data      json.RawMessage   `json:"dynamodb_data"`
-	Objects   map[string][]byte `json:"s3_objects"`
-}
-
 func TestBundleLibawsRemovalCompatibility(t *testing.T) {
 	for _, objectFormat := range []string{"sha1", "sha256"} {
 		t.Run(objectFormat, func(t *testing.T) {
-			fixturePath := filepath.Join("testdata", "libaws-"+objectFormat+".json")
-			if os.Getenv("GIT_REMOTE_AWS_GENERATE_LIBAWS_FIXTURES") == "1" {
-				generateLibawsCompatibilityFixture(t, objectFormat, fixturePath)
-			}
-			raw, err := os.ReadFile(fixturePath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var saved libawsCompatibilityFixture
-			if err := json.Unmarshal(raw, &saved); err != nil {
-				t.Fatal(err)
-			}
+			saved := preLibawsFixture(t, objectFormat)
 			t.Setenv("GIT_REMOTE_AWS_SECRETKEY", saved.SecretKey)
 			t.Setenv("GIT_REMOTE_AWS_SECRETKEY_FILE", "")
 			t.Setenv("GIT_REMOTE_AWS_SECRETKEY_CMD", "")
@@ -88,67 +64,10 @@ func TestBundleLibawsRemovalCompatibility(t *testing.T) {
 	}
 }
 
-// Generate only with the retained pre-removal revision documented in testdata.
-// The checked-in fixtures hold synthetic secrets, actual encrypted bundles and
-// the old DynamoDB payload; ordinary tests do not regenerate them.
-func generateLibawsCompatibilityFixture(t *testing.T, objectFormat, destination string) {
-	t.Helper()
-	producer := runAtOut(".", "git", "rev-parse", "HEAD")
-	if producer != "672701aae88116fe04e9e391cf942db1c6066024" {
-		t.Fatal("fixture generation requires the pre-libaws-removal helper revision documented in testdata/README.md")
-	}
-	changed := runAtOut(".", "git", "diff", "--name-only", producer, "--", "*.go", "go.mod", "go.sum")
-	untracked := runAtOut(".", "git", "ls-files", "--others", "--exclude-standard", "--", "*.go", "go.mod", "go.sum")
-	for _, name := range strings.Split(changed+"\n"+untracked, "\n") {
-		if name != "" && !strings.HasSuffix(name, "_test.go") {
-			t.Fatalf("fixture producer has changed production sources or dependencies: %s", name)
-		}
-	}
-	public := setupEphemeralKeys(t)
-	dir := t.TempDir()
-	runAt(dir, "git", "init", "-q", "--object-format="+objectFormat, "-b", "archive/home")
-	configureGitIdentity(dir)
-	if err := os.WriteFile(filepath.Join(dir, ".publickeys"), []byte(public+"\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "fixture.txt"), []byte("existing encrypted history\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	runAt(dir, "git", "add", ".publickeys", "fixture.txt")
-	runAt(dir, "git", "commit", "-qm", "compatibility fixture")
-	fixture := newMetadataFixture(t)
-	if output, err := runMetadataHelper(t, dir, fixture.server.URL, "push refs/heads/archive/home:refs/heads/archive/home"); err != nil {
-		t.Fatalf("generate pre-removal fixture: %v\n%s", err, output)
-	}
-	fixture.mu.Lock()
-	defer fixture.mu.Unlock()
-	saved := libawsCompatibilityFixture{
-		Producer: producer, Format: objectFormat, Tip: runAtOut(dir, "git", "rev-parse", "HEAD"),
-		PublicKey: public, SecretKey: os.Getenv("GIT_REMOTE_AWS_SECRETKEY"), Data: fixture.data, Objects: fixture.objects,
-	}
-	data, err := json.MarshalIndent(saved, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(destination), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(destination, append(data, '\n'), 0644); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestBundleSizedHistoricalExtension(t *testing.T) {
 	for _, format := range []string{"sha1", "sha256"} {
 		t.Run(format, func(t *testing.T) {
-			raw, err := os.ReadFile(filepath.Join("testdata", "libaws-"+format+".json"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			var saved libawsCompatibilityFixture
-			if err := json.Unmarshal(raw, &saved); err != nil {
-				t.Fatal(err)
-			}
+			saved := preLibawsFixture(t, format)
 			t.Setenv("GIT_REMOTE_AWS_SECRETKEY", saved.SecretKey)
 			t.Setenv("GIT_REMOTE_AWS_SECRETKEY_FILE", "")
 			t.Setenv("GIT_REMOTE_AWS_SECRETKEY_CMD", "")

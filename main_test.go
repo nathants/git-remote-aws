@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -29,6 +30,7 @@ import (
 func runAtResult(dir string, args ...string) (string, string, error) {
 	fmt.Println("runAt", dir, args)
 	cmd := exec.Command(args[0], args[1:]...)
+	cmd.Env = testEnvironment()
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -82,6 +84,7 @@ func setupEphemeralKeys(t *testing.T) string {
 func runAt(dir string, args ...string) {
 	fmt.Println("runAt", dir, args)
 	cmd := exec.Command(args[0], args[1:]...)
+	cmd.Env = testEnvironment()
 	cmd.Stderr = os.Stderr
 	cmd.Stdout = os.Stdout
 	cmd.Dir = dir
@@ -94,6 +97,7 @@ func runAt(dir string, args ...string) {
 func runAtOut(dir string, args ...string) string {
 	fmt.Println("runAt", dir, args)
 	cmd := exec.Command(args[0], args[1:]...)
+	cmd.Env = testEnvironment()
 	cmd.Stderr = os.Stderr
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
@@ -118,6 +122,7 @@ func buildGitRemoteAws(t *testing.T) string {
 	binary := path.Join(t.TempDir(), "git-remote-aws")
 	cmd := exec.Command("go", "build", "-o", binary, ".")
 	cmd.Dir = root
+	cmd.Env = testEnvironment()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	err := cmd.Run()
@@ -167,14 +172,6 @@ func getTestBucketAndTable(t *testing.T) (string, string, string) {
 	if account == "" {
 		panic("GIT_REMOTE_AWS_TEST_ACCOUNT")
 	}
-	identity, err := testAWSClients().sts.GetCallerIdentity(context.Background(), &sts.GetCallerIdentityInput{})
-	if err != nil {
-		panic(err)
-	}
-	acc := aws.ToString(identity.Account)
-	if account != acc {
-		panic("wrong aws account " + fmt.Sprintf("%s != %s", acc, account))
-	}
 	bucket := os.Getenv("GIT_REMOTE_AWS_TEST_BUCKET")
 	if bucket == "" {
 		panic("GIT_REMOTE_AWS_TEST_BUCKET")
@@ -183,13 +180,44 @@ func getTestBucketAndTable(t *testing.T) (string, string, string) {
 	if table == "" {
 		panic("GIT_REMOTE_AWS_TEST_TABLE")
 	}
-	err = os.Setenv("ensure", "y") // git-remote-aws should create dynamodb tables if needed
-	if err != nil {
+	// Helpers run with ensure=y, so a wrong region or missing table would create
+	// a table. Verify the pre-provisioned resources before any helper runs.
+	if err := verifyScratchResources(t.Context(), account, bucket, table); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Setenv("ensure", "y"); err != nil {
 		panic(err)
 	}
 	buildGitRemoteAws(t)
 	setCommitDate()
 	return table, bucket, prefix
+}
+
+// verifyScratchResources uses one AWS configuration to confirm the guarded
+// account and the bucket and table in its configured region.
+func verifyScratchResources(ctx context.Context, account, bucket, table string) error {
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	clients, err := newAWSClients(ctx)
+	if err != nil {
+		return err
+	}
+	identity, err := clients.sts.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		return fmt.Errorf("identify scratch account: %w", err)
+	}
+	if actual := aws.ToString(identity.Account); actual != account {
+		return fmt.Errorf("wrong aws account %s != %s", actual, account)
+	}
+	region := clients.s3.Options().Region
+	head, err := clients.s3.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(bucket)})
+	if err != nil || aws.ToString(head.BucketRegion) != region {
+		return fmt.Errorf("scratch bucket %s is not available in %q: %v", bucket, region, err)
+	}
+	if _, err := clients.dynamodb.DescribeTable(ctx, &dynamodb.DescribeTableInput{TableName: aws.String(table)}); err != nil {
+		return fmt.Errorf("scratch table %s is not available in %q: %w", table, region, err)
+	}
+	return nil
 }
 
 func newTempdir() (string, func()) {

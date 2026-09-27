@@ -13,21 +13,14 @@ import (
 	"github.com/nathants/go-libsodium"
 )
 
-// The old binary must be independently built from the pre-keychain implementation
-// and its pinned module graph. All remote writes are to guarded scratch resources.
+// The pre-keychain helper writes real history; all remote writes are to guarded
+// scratch resources.
 func TestStoredDataCompatibilityAndRotation(t *testing.T) {
-	oldBinary := os.Getenv("GIT_REMOTE_AWS_TEST_OLD_BINARY")
-	if oldBinary == "" {
-		t.Skip("requires pre-keychain binary and guarded scratch AWS resources")
-	}
-	oldDirectory, err := prepareOldHelper(oldBinary, t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
 	libsodium.Init()
 	for _, objectFormat := range []string{"sha1", "sha256"} {
 		t.Run(objectFormat, func(t *testing.T) {
 			table, bucket, prefix := getTestBucketAndTable(t)
+			oldDirectory := historicalHelper(t, preKeychainRevision, preKeychainLibsodium)
 			if err := testAWSClients().waitForTable(context.Background(), table); err != nil {
 				t.Fatal(err)
 			}
