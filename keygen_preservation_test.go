@@ -18,7 +18,7 @@ func TestKeygenRetainsDecryptableHistoricalPrefix(t *testing.T) {
 	p, s := filepath.Join(dir, "public"), filepath.Join(dir, "private")
 	var beforeP, beforeS []byte
 	var fixtures [][]byte
-	for generation := 0; generation < 3; generation++ {
+	for range 3 {
 		if err := rotateKeyFiles(p, s); err != nil {
 			t.Fatal(err)
 		}

@@ -361,7 +361,7 @@ func TestLeaseAWSConfigurationPreservesProfileEndpoints(t *testing.T) {
 func TestLeaseAWSWaitCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/x-amz-json-1.0")
 		_, _ = io.WriteString(w, `{"Table":{"TableStatus":"CREATING"}}`)
 		cancel()

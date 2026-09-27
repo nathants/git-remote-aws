@@ -32,14 +32,6 @@ const (
 	zeroHash256   = "0000000000000000000000000000000000000000000000000000000000000000"
 )
 
-func reverse[T any](s []T) []T {
-	res := []T{}
-	for i := len(s) - 1; i >= 0; i-- {
-		res = append(res, s[i])
-	}
-	return res
-}
-
 func last[T any](s []T) T {
 	return s[len(s)-1]
 }
@@ -113,8 +105,7 @@ func (clients *awsClients) readPublishedMetadata(ctx context.Context, table, buc
 		if err == nil {
 			return meta, m, nil
 		}
-		var missing *s3types.NoSuchKey
-		if !errors.As(err, &missing) {
+		if _, missing := errors.AsType[*s3types.NoSuchKey](err); !missing {
 			return nil, nil, err
 		}
 		if attempt == maximumAttempts {
@@ -160,7 +151,7 @@ func gitBranchContains(ctx context.Context, branch, hash string) (bool, bool) {
 	if err == nil {
 		return true, true
 	}
-	if exitErr, ok := err.(*exec.ExitError); ok {
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 		switch exitErr.ExitCode() {
 		case 1:
 			return false, true
@@ -484,7 +475,7 @@ func (clients *awsClients) fetchManifest(ctx context.Context, bucket, remotePath
 	// stop when the bundle end commit exists in the local data. all
 	// bundles which do not exist in local need to be fetched.
 	var bundlesToFetch []bundleRef
-	for _, bundle := range reverse(bundles) {
+	for _, bundle := range slices.Backward(bundles) {
 		hash := hashEnd(bundle.Range)
 		contains, known := gitBranchContains(ctx, branch, hash)
 		if known && contains {
@@ -492,7 +483,7 @@ func (clients *awsClients) fetchManifest(ctx context.Context, bucket, remotePath
 		}
 		bundlesToFetch = append(bundlesToFetch, bundle)
 	}
-	bundlesToFetch = reverse(bundlesToFetch)
+	slices.Reverse(bundlesToFetch)
 
 	// setup tempdir and defer cleanup
 	tempdir, err := os.MkdirTemp("/tmp", tempdirPrefix)
@@ -727,7 +718,7 @@ func gitHelper() {
 			panic(err)
 		}
 		if input.err != nil {
-			if input.err == io.EOF {
+			if errors.Is(input.err, io.EOF) {
 				os.Exit(1)
 			}
 			panic(input.err)

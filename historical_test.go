@@ -287,7 +287,7 @@ func TestBundleHistoricalMissingRevisionFails(t *testing.T) {
 
 func TestBundleHistoricalGenerationIsOffline(t *testing.T) {
 	var escaped atomic.Int32
-	trap := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	trap := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		escaped.Add(1)
 		w.WriteHeader(http.StatusForbidden)
 	}))

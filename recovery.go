@@ -41,7 +41,7 @@ func recoverRepository(args []string) error {
 	if err != nil {
 		return fmt.Errorf("inspect Git recovery environment: %w", err)
 	}
-	for _, name := range strings.Fields(string(localVariables)) {
+	for name := range strings.FieldsSeq(string(localVariables)) {
 		if err := os.Unsetenv(name); err != nil {
 			return err
 		}

@@ -153,8 +153,7 @@ func TestDynamolockMigrationRejectsStalePreimage(t *testing.T) {
 			}
 			competing := read()
 			_, err = client.UpdateItem(t.Context(), stale)
-			var rejected *types.ConditionalCheckFailedException
-			if !errors.As(err, &rejected) {
+			if _, rejected := errors.AsType[*types.ConditionalCheckFailedException](err); !rejected {
 				t.Fatalf("DynamoDB accepted stale %s migration: %v", scenario, err)
 			}
 			if actual := read(); !reflect.DeepEqual(actual, competing) {

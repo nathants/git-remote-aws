@@ -24,7 +24,7 @@ var testGitVariables = sync.OnceValue(func() map[string]bool {
 		panic(fmt.Errorf("inspect Git test environment: %w", err))
 	}
 	names := map[string]bool{}
-	for _, name := range strings.Fields(string(output)) {
+	for name := range strings.FieldsSeq(string(output)) {
 		names[name] = true
 	}
 	return names

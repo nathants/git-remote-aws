@@ -62,7 +62,7 @@ func TestBundleCancellationKillsPackObjects(t *testing.T) {
 		}
 		if parent != 0 {
 			children, _ := os.ReadFile(fmt.Sprintf("/proc/%d/task/%d/children", parent, parent))
-			for _, child := range strings.Fields(string(children)) {
+			for child := range strings.FieldsSeq(string(children)) {
 				pid, _ := strconv.Atoi(child)
 				command, _ := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
 				if strings.Contains(string(command), "pack-objects") && syscall.Kill(pid, syscall.SIGSTOP) == nil {

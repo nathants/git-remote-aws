@@ -443,8 +443,7 @@ func (clients *awsClients) adoptBundles(ctx context.Context, bucket string, repo
 			branch = defaultBranch
 		}
 		m, err := clients.getManifest(ctx, bucket, key, source, branch)
-		var missing *s3types.NoSuchKey
-		if errors.As(err, &missing) {
+		if _, missing := errors.AsType[*s3types.NoSuchKey](err); missing {
 			continue
 		}
 		if err != nil {

@@ -279,12 +279,15 @@ is a separate administrative action; stop writers before doing so.
 
 ### Cloud-free checks
 
-- Prerequisites: [build dependencies](readme.md#install), Bash, and Python 3.8+
-  for CLI/terminal tests. All nine analysis tools in `bin/check.sh`'s prerequisite
-  loop must already be on PATH; the script fails if any is missing and never
-  installs tools.
-- Gate: `GOTOOLCHAIN=local bash bin/check.sh`. Runs analysis, builds, and the full
-  cloud-free selection with race instrumentation.
+- Prerequisites: [build dependencies](readme.md#install), Bash, Python 3.8+ for
+  CLI/terminal tests, and `libcheck` on PATH
+  (`go install github.com/nathants/libcheck@latest`) with its pinned tools
+  installed. libcheck verifies tool versions and never installs anything; its
+  `security` step needs network.
+- Gate: `GOTOOLCHAIN=local bash bin/check.sh`. Runs libcheck lint and `security`
+  (govulncheck), builds, and the full cloud-free selection with race
+  instrumentation. Lint policy belongs to libcheck: keep no linter configuration
+  here, and follow its readme for suppressions and `libcheck.json` exceptions.
 - Cloud-free selection: `GOTOOLCHAIN=local go test -race -count=1 -run '^(TestKey|TestBundle|TestRef|TestEncryption|TestLease|TestMigration)' ./...`.
 - Migration units alone: `go test -count=1 -run '^TestMigration' ./...`.
 - Test helpers build into `t.TempDir()`, never over the installed helper,

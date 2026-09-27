@@ -95,8 +95,7 @@ func (clients *awsClients) ensureBucket(ctx context.Context, bucket string, ensu
 		options.Retryer = aws.NopRetryer{}
 		options.RetryMaxAttempts = 1
 	})
-	var owned *s3types.BucketAlreadyOwnedByYou
-	if errors.As(err, &owned) {
+	if _, owned := errors.AsType[*s3types.BucketAlreadyOwnedByYou](err); owned {
 		return nil // Another creator won; never converge its existing configuration.
 	}
 	if err != nil {
@@ -172,8 +171,7 @@ func (clients *awsClients) ensureTable(ctx context.Context, table string, ensure
 	if err == nil {
 		return nil // Existing schema, billing, TTL, tags and records remain untouched.
 	}
-	var missing *ddbtypes.ResourceNotFoundException
-	if !errors.As(err, &missing) {
+	if _, missing := errors.AsType[*ddbtypes.ResourceNotFoundException](err); !missing {
 		return fmt.Errorf("inspect DynamoDB table %q: %w", table, err)
 	}
 	if !ensure {

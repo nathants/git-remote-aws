@@ -110,7 +110,7 @@ func TestLeaseHelperSignals(t *testing.T) {
 				script := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = '%s' ]; then\n printf '%%s\\n' \"$3\" > '%s.bundle'\n sleep 30 &\n child=$!\n printf '%%s %%s\\n' $$ $child > '%s'\n wait $child\nfi\nexec '%s' \"$@\"\n", blocked, pidfile, pidfile, git)
 				defer func() {
 					if text, err := os.ReadFile(pidfile); err == nil {
-						for _, text := range strings.Fields(string(text)) {
+						for text := range strings.FieldsSeq(string(text)) {
 							if pid, err := strconv.Atoi(text); err == nil && pid > 0 {
 								_ = syscall.Kill(pid, syscall.SIGKILL)
 							}
@@ -199,7 +199,7 @@ func TestLeaseHelperSignals(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					for _, text := range strings.Fields(string(text)) {
+					for text := range strings.FieldsSeq(string(text)) {
 						pid, err := strconv.Atoi(text)
 						if err != nil || pid <= 0 {
 							t.Fatalf("invalid child pid: %q", text)

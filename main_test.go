@@ -185,9 +185,7 @@ func getTestBucketAndTable(t *testing.T) (string, string, string) {
 	if err := verifyScratchResources(t.Context(), account, bucket, table); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Setenv("ensure", "y"); err != nil {
-		panic(err)
-	}
+	t.Setenv("ensure", "y")
 	buildGitRemoteAws(t)
 	setCommitDate()
 	return table, bucket, prefix
@@ -211,8 +209,11 @@ func verifyScratchResources(ctx context.Context, account, bucket, table string) 
 	}
 	region := clients.s3.Options().Region
 	head, err := clients.s3.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(bucket)})
-	if err != nil || aws.ToString(head.BucketRegion) != region {
-		return fmt.Errorf("scratch bucket %s is not available in %q: %v", bucket, region, err)
+	if err != nil {
+		return fmt.Errorf("scratch bucket %s is not available in %q: %w", bucket, region, err)
+	}
+	if actual := aws.ToString(head.BucketRegion); actual != region {
+		return fmt.Errorf("scratch bucket %s is in %q, not %q", bucket, actual, region)
 	}
 	if _, err := clients.dynamodb.DescribeTable(ctx, &dynamodb.DescribeTableInput{TableName: aws.String(table)}); err != nil {
 		return fmt.Errorf("scratch table %s is not available in %q: %w", table, region, err)

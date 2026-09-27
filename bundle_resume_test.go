@@ -86,7 +86,7 @@ exec '%s' "$@"
 				if err != nil || len(ranges) == 0 {
 					t.Fatalf("did not observe remaining Git work: %v", err)
 				}
-				for _, name := range strings.Fields(string(ranges)) {
+				for name := range strings.FieldsSeq(string(ranges)) {
 					start, _, err := validBundleRange(name)
 					if err != nil || start != commits[2] && start != commits[3] {
 						t.Errorf("estimated or packed completed history: %s", name)
