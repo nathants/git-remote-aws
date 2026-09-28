@@ -16,7 +16,6 @@ import (
 func TestSizedBundlePushAWS(t *testing.T) {
 	public := setupEphemeralKeys(t)
 	table, bucket, prefix := getTestBucketAndTable(t)
-	defer cleanupAws(table, bucket, prefix)
 	clients := testAWSClients()
 	dir := t.TempDir()
 	runAt(dir, "git", "init", "-q", "--object-format=sha256", "-b", "archive/home")
@@ -94,7 +93,6 @@ func TestSizedBundlePushAWS(t *testing.T) {
 func TestResumedBundlePushAWS(t *testing.T) {
 	public := setupEphemeralKeys(t)
 	table, bucket, prefix := getTestBucketAndTable(t)
-	defer cleanupAws(table, bucket, prefix)
 	clients := testAWSClients()
 	dir := t.TempDir()
 	runAt(dir, "git", "init", "-q", "-b", "archive/home")

@@ -21,10 +21,6 @@ func TestStoredDataCompatibilityAndRotation(t *testing.T) {
 		t.Run(objectFormat, func(t *testing.T) {
 			table, bucket, prefix := getTestBucketAndTable(t)
 			oldDirectory := historicalHelper(t, preKeychainRevision, preKeychainLibsodium)
-			if err := testAWSClients().waitForTable(context.Background(), table); err != nil {
-				t.Fatal(err)
-			}
-			defer cleanupAws(table, bucket, prefix)
 			newPath := os.Getenv("PATH")
 			public, secret, err := libsodium.BoxKeypair()
 			if err != nil {
@@ -139,10 +135,6 @@ func TestStoredDataCompatibilityAndRotation(t *testing.T) {
 
 func TestPushNoOpRejectsUncommittedRecipients(t *testing.T) {
 	table, bucket, prefix := getTestBucketAndTable(t)
-	defer cleanupAws(table, bucket, prefix)
-	if err := testAWSClients().waitForTable(context.Background(), table); err != nil {
-		t.Fatal(err)
-	}
 	public := setupEphemeralKeys(t)
 	dir := t.TempDir()
 	runAt(dir, "git", "init", "-q", "--initial-branch=master")

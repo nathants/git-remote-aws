@@ -33,8 +33,6 @@ func liveManifest(t *testing.T, table, bucket, prefix string) *manifest {
 
 func TestNamespaceLegacyAdoptionAWS(t *testing.T) {
 	table, bucket, prefix := getTestBucketAndTable(t)
-	defer cleanupAws(table, bucket, prefix)
-	defer cleanupAws(table, bucket, prefix+"/2")
 	clients := testAWSClients()
 	saved := preLibawsFixture(t, "sha256")
 	t.Setenv("GIT_REMOTE_AWS_SECRETKEY", saved.SecretKey)
@@ -119,9 +117,6 @@ func TestNamespaceLegacyAdoptionAWS(t *testing.T) {
 func TestNamespaceConcurrentWritersAWS(t *testing.T) {
 	public := setupEphemeralKeys(t)
 	table, bucket, prefix := getTestBucketAndTable(t)
-	defer cleanupAws(table, bucket, prefix)
-	defer cleanupAws(table, bucket, prefix+"/2")
-	defer cleanupAws(table, bucket, prefix+"/3")
 	dir := t.TempDir()
 	runAt(dir, "git", "init", "-q", "-b", "archive/home")
 	configureGitIdentity(dir)

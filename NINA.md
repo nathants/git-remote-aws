@@ -299,17 +299,20 @@ is a separate administrative action; stop writers before doing so.
 
 ### Live AWS gate
 
-- Run `GOTOOLCHAIN=local GOFLAGS=-race go test -count=1 -timeout=15m ./...` with
-  `GIT_REMOTE_AWS_TEST_ACCOUNT`, `GIT_REMOTE_AWS_TEST_BUCKET`, and
-  `GIT_REMOTE_AWS_TEST_TABLE`. Use an independently known scratch account and
-  disposable, pre-provisioned resources: a versioned S3 bucket and a DynamoDB
-  table with string partition key `id`. Set `AWS_REGION` to their region; tests
-  verify the account, bucket region, and table before any helper runs with
-  `ensure=y`. Never use production resources or go-dynamolock's reusable test table.
-- Test cleanup permanently deletes versions and delete markers within owned UUID
-  namespaces. It needs `s3:ListBucketVersions`, `s3:GetObjectVersion`, and
-  `s3:DeleteObjectVersion` in addition to helper permissions. Confirm cleanup,
-  then remove the scratch bucket and table.
+- Run `GOTOOLCHAIN=local GOFLAGS=-race go test -count=1 -timeout=60m ./...` with
+  credentials and a region for an independently known scratch account, and
+  `GIT_REMOTE_AWS_TEST_ACCOUNT` set to that account; live tests skip without it.
+  Tests verify the account through STS before any helper runs with `ensure=y`.
+  Never use production credentials.
+- Each live test creates a fresh `git-remote-aws-test-UUID` bucket and table
+  through the helper's `ensure=y` setup; `TestEnsureSetupAWS` verifies the
+  configuration AWS applied. Test cleanup, which also runs after panics,
+  permanently deletes every object version, delete marker, and incomplete upload,
+  then the bucket and table. Beyond setup permissions, it needs
+  `s3:ListBucketVersions`, `s3:DeleteObjectVersion`,
+  `s3:ListBucketMultipartUploads`, `s3:DeleteBucket`, and `dynamodb:DeleteTable`.
+  A killed or timed-out run skips cleanup; remove leftover
+  `git-remote-aws-test-*` resources administratively.
 - Keep `TestNamespace*AWS` in the full live gate: these cover legacy promotion/reuse
   and actual concurrent writers to separate and shared destination leases.
 - `TestDynamolockMigration` runs the migration CLI and then reads, acquires, and

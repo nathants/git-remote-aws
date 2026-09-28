@@ -35,7 +35,6 @@ func migrateTestRepository(t *testing.T, table, bucket, prefix string) {
 
 func TestDynamolockMigration(t *testing.T) {
 	table, bucket, prefix := getTestBucketAndTable(t)
-	defer cleanupAws(table, bucket, prefix)
 	client := testAWSClients().dynamodb
 	id := bucket + "/" + prefix
 	old := map[string]types.AttributeValue{
@@ -102,7 +101,6 @@ func TestDynamolockMigration(t *testing.T) {
 // DynamoDB, not a local condition evaluator, must reject every stale preimage.
 func TestDynamolockMigrationRejectsStalePreimage(t *testing.T) {
 	table, bucket, prefix := getTestBucketAndTable(t)
-	defer cleanupAws(table, bucket, prefix)
 	client := testAWSClients().dynamodb
 	for _, scenario := range []string{"payload", "legacy-owner", "lease-owner", "deleted", "migrated"} {
 		t.Run(scenario, func(t *testing.T) {

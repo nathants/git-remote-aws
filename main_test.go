@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -22,6 +23,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"github.com/aws/smithy-go"
 	"github.com/gofrs/uuid/v5"
 	"github.com/nathants/go-dynamolock"
 	"github.com/nathants/go-libsodium"
@@ -166,59 +168,113 @@ func testAWSClients() *awsClients {
 	return clients
 }
 
+// getTestBucketAndTable skips live tests unless GIT_REMOTE_AWS_TEST_ACCOUNT
+// names the configured credentials' account. The helper's ensure=y setup creates
+// a fresh bucket and table, which are permanently deleted after the test. The
+// returned prefix is a UUID namespace for the test's repository.
 func getTestBucketAndTable(t *testing.T) (string, string, string) {
-	prefix := newUuid()
+	t.Helper()
 	account := os.Getenv("GIT_REMOTE_AWS_TEST_ACCOUNT")
 	if account == "" {
-		panic("GIT_REMOTE_AWS_TEST_ACCOUNT")
+		t.Skip("set GIT_REMOTE_AWS_TEST_ACCOUNT to run live AWS tests")
 	}
-	bucket := os.Getenv("GIT_REMOTE_AWS_TEST_BUCKET")
-	if bucket == "" {
-		panic("GIT_REMOTE_AWS_TEST_BUCKET")
+	clients := testAWSClients()
+	// Helpers run with ensure=y, so confirm the scratch account before any of
+	// them can create resources.
+	identity, err := clients.sts.GetCallerIdentity(t.Context(), &sts.GetCallerIdentityInput{})
+	if err != nil {
+		t.Fatalf("identify scratch account: %v", err)
 	}
-	table := os.Getenv("GIT_REMOTE_AWS_TEST_TABLE")
-	if table == "" {
-		panic("GIT_REMOTE_AWS_TEST_TABLE")
+	if actual := aws.ToString(identity.Account); actual != account {
+		t.Fatalf("wrong aws account %s != %s", actual, account)
 	}
-	// Helpers run with ensure=y, so a wrong region or missing table would create
-	// a table. Verify the pre-provisioned resources before any helper runs.
-	if err := verifyScratchResources(t.Context(), account, bucket, table); err != nil {
-		t.Fatal(err)
-	}
+	// Cleanups also run when a test panics, unlike code after TestMain's m.Run.
+	name := "git-remote-aws-test-" + newUuid()
+	t.Cleanup(func() {
+		if err := deleteTestResources(clients, account, name); err != nil {
+			t.Errorf("delete test bucket and table %s: %v", name, err)
+		}
+	})
 	t.Setenv("ensure", "y")
 	buildGitRemoteAws(t)
 	setCommitDate()
-	return table, bucket, prefix
+	prefix := newUuid()
+	// Tests access the resources directly, so create them before returning.
+	// The helper never retries CreateBucket, so retry setup only while the
+	// bucket, which it creates first, is still absent.
+	dir := t.TempDir()
+	runAt(dir, "git", "init", "-q")
+	for attempt := 1; ; attempt++ {
+		_, stderr, err := runAtResult(dir, "git", "ls-remote", "aws://"+name+"+"+name+"/"+prefix)
+		if err == nil {
+			break
+		}
+		exists, existsErr := clients.bucketExists(t.Context(), name)
+		if attempt == 3 || exists || existsErr != nil {
+			t.Fatalf("create test bucket and table through ensure=y: %v\n%s", errors.Join(err, existsErr), stderr)
+		}
+	}
+	return name, name, prefix
 }
 
-// verifyScratchResources uses one AWS configuration to confirm the guarded
-// account and the bucket and table in its configured region.
-func verifyScratchResources(ctx context.Context, account, bucket, table string) error {
-	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+// deleteTestResources permanently deletes a test bucket, including every object
+// version, delete marker, and incomplete upload, and the table of the same name.
+// Either may be absent when setup failed.
+func deleteTestResources(clients *awsClients, account, name string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	clients, err := newAWSClients(ctx)
-	if err != nil {
-		return err
+	bucketErr := deleteTestBucket(ctx, clients.s3, account, name)
+	_, err := clients.dynamodb.DeleteTable(ctx, &dynamodb.DeleteTableInput{TableName: aws.String(name)})
+	if _, missing := errors.AsType[*ddbtypes.ResourceNotFoundException](err); missing {
+		err = nil
 	}
-	identity, err := clients.sts.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
-	if err != nil {
-		return fmt.Errorf("identify scratch account: %w", err)
+	return errors.Join(bucketErr, err)
+}
+
+func deleteTestBucket(ctx context.Context, client *s3.Client, account, bucket string) error {
+	owner := aws.String(account)
+	versions := s3.NewListObjectVersionsPaginator(client, &s3.ListObjectVersionsInput{Bucket: aws.String(bucket), ExpectedBucketOwner: owner})
+	for versions.HasMorePages() {
+		page, err := versions.NextPage(ctx)
+		if apiErr, ok := errors.AsType[smithy.APIError](err); ok && apiErr.ErrorCode() == "NoSuchBucket" {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		var objects []s3types.ObjectIdentifier
+		for _, version := range page.Versions {
+			objects = append(objects, s3types.ObjectIdentifier{Key: version.Key, VersionId: version.VersionId})
+		}
+		for _, marker := range page.DeleteMarkers {
+			objects = append(objects, s3types.ObjectIdentifier{Key: marker.Key, VersionId: marker.VersionId})
+		}
+		if len(objects) == 0 {
+			continue
+		}
+		// A page holds at most 1000 entries, DeleteObjects' batch limit.
+		out, err := client.DeleteObjects(ctx, &s3.DeleteObjectsInput{Bucket: aws.String(bucket), ExpectedBucketOwner: owner, Delete: &s3types.Delete{Objects: objects, Quiet: aws.Bool(true)}})
+		if err != nil {
+			return err
+		}
+		if len(out.Errors) != 0 {
+			return fmt.Errorf("delete object versions: %+v", out.Errors)
+		}
 	}
-	if actual := aws.ToString(identity.Account); actual != account {
-		return fmt.Errorf("wrong aws account %s != %s", actual, account)
+	uploads := s3.NewListMultipartUploadsPaginator(client, &s3.ListMultipartUploadsInput{Bucket: aws.String(bucket), ExpectedBucketOwner: owner})
+	for uploads.HasMorePages() {
+		page, err := uploads.NextPage(ctx)
+		if err != nil {
+			return err
+		}
+		for _, upload := range page.Uploads {
+			if _, err := client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{Bucket: aws.String(bucket), Key: upload.Key, UploadId: upload.UploadId, ExpectedBucketOwner: owner}); err != nil {
+				return err
+			}
+		}
 	}
-	region := clients.s3.Options().Region
-	head, err := clients.s3.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(bucket)})
-	if err != nil {
-		return fmt.Errorf("scratch bucket %s is not available in %q: %w", bucket, region, err)
-	}
-	if actual := aws.ToString(head.BucketRegion); actual != region {
-		return fmt.Errorf("scratch bucket %s is in %q, not %q", bucket, actual, region)
-	}
-	if _, err := clients.dynamodb.DescribeTable(ctx, &dynamodb.DescribeTableInput{TableName: aws.String(table)}); err != nil {
-		return fmt.Errorf("scratch table %s is not available in %q: %w", table, region, err)
-	}
-	return nil
+	_, err := client.DeleteBucket(ctx, &s3.DeleteBucketInput{Bucket: aws.String(bucket), ExpectedBucketOwner: owner})
+	return err
 }
 
 func newTempdir() (string, func()) {
@@ -237,48 +293,6 @@ func setCommitDate() {
 	date := "Aug 1 00:00:00 2022 +0000"
 	_ = os.Setenv("GIT_COMMITTER_DATE", date)
 	_ = os.Setenv("GIT_AUTHOR_DATE", date)
-}
-
-func cleanupAws(table, bucket, prefix string) {
-	_, err := testAWSClients().dynamodb.DeleteItem(context.Background(), &dynamodb.DeleteItemInput{
-		TableName: aws.String(table),
-		Key: map[string]ddbtypes.AttributeValue{
-			"id": &ddbtypes.AttributeValueMemberS{
-				Value: bucket + "/" + prefix,
-			},
-		},
-	})
-	if err != nil {
-		panic(err)
-	}
-	// Tests own their UUID namespace. Permanently remove only that namespace's
-	// versions and delete markers; production cleanup never uses this operation.
-	client := testAWSClients().s3
-	pages := s3.NewListObjectVersionsPaginator(client, &s3.ListObjectVersionsInput{Bucket: aws.String(bucket), Prefix: aws.String(prefix + "/")})
-	var objects []s3types.ObjectIdentifier
-	for pages.HasMorePages() {
-		out, err := pages.NextPage(context.Background())
-		if err != nil {
-			panic(err)
-		}
-		for _, version := range out.Versions {
-			objects = append(objects, s3types.ObjectIdentifier{Key: version.Key, VersionId: version.VersionId})
-		}
-		for _, marker := range out.DeleteMarkers {
-			objects = append(objects, s3types.ObjectIdentifier{Key: marker.Key, VersionId: marker.VersionId})
-		}
-	}
-	for len(objects) > 0 {
-		count := min(1000, len(objects))
-		out, err := client.DeleteObjects(context.Background(), &s3.DeleteObjectsInput{Bucket: aws.String(bucket), Delete: &s3types.Delete{Objects: objects[:count]}})
-		if err != nil {
-			panic(err)
-		}
-		if len(out.Errors) != 0 {
-			panic(fmt.Sprintf("test version cleanup failed: %+v", out.Errors))
-		}
-		objects = objects[count:]
-	}
 }
 
 func listKeys(bucket, prefix string) []string {
@@ -429,7 +443,6 @@ func TestBasic(t *testing.T) {
 	defer cleanup()
 
 	table, bucket, prefix := getTestBucketAndTable(t)
-	defer cleanupAws(table, bucket, prefix)
 
 	publicKey := setupEphemeralKeys(t)
 
@@ -467,7 +480,6 @@ func TestBasicSha256(t *testing.T) {
 	defer cleanup()
 
 	table, bucket, prefix := getTestBucketAndTable(t)
-	defer cleanupAws(table, bucket, prefix)
 
 	publicKey := setupEphemeralKeys(t)
 
@@ -505,7 +517,6 @@ func TestPushBeforePullShouldFailSha256(t *testing.T) {
 	defer cleanup()
 
 	table, bucket, prefix := getTestBucketAndTable(t)
-	defer cleanupAws(table, bucket, prefix)
 
 	publicKey := setupEphemeralKeys(t)
 
@@ -573,7 +584,6 @@ func TestFirstPushTagIsBanned(t *testing.T) {
 	dir, cleanup := newTempdir()
 	defer cleanup()
 	table, bucket, prefix := getTestBucketAndTable(t)
-	defer cleanupAws(table, bucket, prefix)
 
 	publicKey := setupEphemeralKeys(t)
 
@@ -595,7 +605,6 @@ func TestFirstPushSlashBranchRoundTrip(t *testing.T) {
 	dir, cleanup := newTempdir()
 	defer cleanup()
 	table, bucket, prefix := getTestBucketAndTable(t)
-	defer cleanupAws(table, bucket, prefix)
 
 	publicKey := setupEphemeralKeys(t)
 
@@ -628,7 +637,6 @@ func TestBranchesAndTagsAreBanned(t *testing.T) {
 	dir, cleanup := newTempdir()
 	defer cleanup()
 	table, bucket, prefix := getTestBucketAndTable(t)
-	defer cleanupAws(table, bucket, prefix)
 
 	publicKey := setupEphemeralKeys(t)
 
@@ -657,7 +665,6 @@ func TestMutatingHistoryIsBanned(t *testing.T) {
 	dir, cleanup := newTempdir()
 	defer cleanup()
 	table, bucket, prefix := getTestBucketAndTable(t)
-	defer cleanupAws(table, bucket, prefix)
 
 	publicKey := setupEphemeralKeys(t)
 
@@ -689,7 +696,6 @@ func TestPushWithoutPullShouldFail(t *testing.T) {
 	dir, cleanup := newTempdir()
 	defer cleanup()
 	table, bucket, prefix := getTestBucketAndTable(t)
-	defer cleanupAws(table, bucket, prefix)
 
 	publicKey := setupEphemeralKeys(t)
 
@@ -730,7 +736,6 @@ func TestPushFailsWhenBundlesMetadataObjectIsMissing(t *testing.T) {
 	dir, cleanup := newTempdir()
 	defer cleanup()
 	table, bucket, prefix := getTestBucketAndTable(t)
-	defer cleanupAws(table, bucket, prefix)
 
 	publicKey := setupEphemeralKeys(t)
 
@@ -764,7 +769,6 @@ func TestPushFailsWhenBundlesMetadataObjectIsEmpty(t *testing.T) {
 	dir, cleanup := newTempdir()
 	defer cleanup()
 	table, bucket, prefix := getTestBucketAndTable(t)
-	defer cleanupAws(table, bucket, prefix)
 
 	publicKey := setupEphemeralKeys(t)
 
@@ -798,7 +802,6 @@ func TestFetchFailsWhenBundleMetadataContainsPathTraversal(t *testing.T) {
 	dir, cleanup := newTempdir()
 	defer cleanup()
 	table, bucket, prefix := getTestBucketAndTable(t)
-	defer cleanupAws(table, bucket, prefix)
 
 	publicKey := setupEphemeralKeys(t)
 
