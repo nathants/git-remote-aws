@@ -168,15 +168,15 @@ func testAWSClients() *awsClients {
 	return clients
 }
 
-// getTestBucketAndTable skips live tests unless GIT_REMOTE_AWS_TEST_ACCOUNT
-// names the configured credentials' account. The helper's ensure=y setup creates
-// a fresh bucket and table, which are permanently deleted after the test. The
-// returned prefix is a UUID namespace for the test's repository.
+// getTestBucketAndTable requires GIT_REMOTE_AWS_TEST_ACCOUNT to name the
+// configured credentials' account. The helper's ensure=y setup creates a fresh
+// bucket and table, which are permanently deleted after the test. The returned
+// prefix is a UUID namespace for the test's repository.
 func getTestBucketAndTable(t *testing.T) (string, string, string) {
 	t.Helper()
 	account := os.Getenv("GIT_REMOTE_AWS_TEST_ACCOUNT")
 	if account == "" {
-		t.Skip("set GIT_REMOTE_AWS_TEST_ACCOUNT to run live AWS tests")
+		t.Fatal("set GIT_REMOTE_AWS_TEST_ACCOUNT to run live AWS tests")
 	}
 	clients := testAWSClients()
 	// Helpers run with ensure=y, so confirm the scratch account before any of
@@ -221,14 +221,33 @@ func getTestBucketAndTable(t *testing.T) (string, string, string) {
 // version, delete marker, and incomplete upload, and the table of the same name.
 // Either may be absent when setup failed.
 func deleteTestResources(clients *awsClients, account, name string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	bucketErr := deleteTestBucket(ctx, clients.s3, account, name)
-	_, err := clients.dynamodb.DeleteTable(ctx, &dynamodb.DeleteTableInput{TableName: aws.String(name)})
-	if _, missing := errors.AsType[*ddbtypes.ResourceNotFoundException](err); missing {
-		err = nil
+	bucketCtx, cancelBucket := context.WithTimeout(context.Background(), 5*time.Minute)
+	bucketErr := deleteTestBucket(bucketCtx, clients.s3, account, name)
+	cancelBucket()
+	// A slow or unavailable S3 endpoint must not consume the table's budget.
+	tableCtx, cancelTable := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancelTable()
+	return errors.Join(bucketErr, deleteTestTable(tableCtx, clients.dynamodb, name))
+}
+
+func deleteTestTable(ctx context.Context, client *dynamodb.Client, table string) error {
+	for {
+		_, err := client.DeleteTable(ctx, &dynamodb.DeleteTableInput{TableName: aws.String(table)})
+		if _, missing := errors.AsType[*ddbtypes.ResourceNotFoundException](err); err == nil || missing {
+			return nil
+		}
+		if _, inUse := errors.AsType[*ddbtypes.ResourceInUseException](err); !inUse {
+			return err
+		}
+		// Failed setup can leave the table CREATING, when deletion is rejected.
+		timer := time.NewTimer(2 * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return errors.Join(err, ctx.Err())
+		case <-timer.C:
+		}
 	}
-	return errors.Join(bucketErr, err)
 }
 
 func deleteTestBucket(ctx context.Context, client *s3.Client, account, bucket string) error {

@@ -301,16 +301,20 @@ is a separate administrative action; stop writers before doing so.
 
 - Run `GOTOOLCHAIN=local GOFLAGS=-race go test -count=1 -timeout=60m ./...` with
   credentials and a region for an independently known scratch account, and
-  `GIT_REMOTE_AWS_TEST_ACCOUNT` set to that account; live tests skip without it.
-  Tests verify the account through STS before any helper runs with `ensure=y`.
-  Never use production credentials.
+  `GIT_REMOTE_AWS_TEST_ACCOUNT` set to that account. Live tests fail, never skip,
+  when it is unset. Tests verify the account through STS before any helper runs
+  with `ensure=y`. Never use production credentials.
 - Each live test creates a fresh `git-remote-aws-test-UUID` bucket and table
   through the helper's `ensure=y` setup; `TestEnsureSetupAWS` verifies the
   configuration AWS applied. Test cleanup, which also runs after panics,
   permanently deletes every object version, delete marker, and incomplete upload,
-  then the bucket and table. Beyond setup permissions, it needs
-  `s3:ListBucketVersions`, `s3:DeleteObjectVersion`,
-  `s3:ListBucketMultipartUploads`, `s3:DeleteBucket`, and `dynamodb:DeleteTable`.
+  then the bucket and table. Beyond normal helper and setup permissions, the
+  suite needs `s3:ListBucketVersions`, `s3:GetObjectVersion`,
+  `s3:DeleteObjectVersion`, `s3:ListBucketMultipartUploads`, `s3:DeleteBucket`,
+  and `dynamodb:DeleteTable`. Setup verification also needs
+  `s3:GetBucketPublicAccessBlock`, `s3:GetEncryptionConfiguration`,
+  `s3:GetBucketPolicy`, `s3:GetBucketTagging`, `dynamodb:DescribeTimeToLive`,
+  and `dynamodb:ListTagsOfResource`.
   A killed or timed-out run skips cleanup; remove leftover
   `git-remote-aws-test-*` resources administratively.
 - Keep `TestNamespace*AWS` in the full live gate: these cover legacy promotion/reuse
