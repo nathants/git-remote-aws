@@ -11,8 +11,8 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.50.0
 	github.com/aws/smithy-go v1.28.1
 	github.com/gofrs/uuid/v5 v5.5.1
-	github.com/nathants/go-dynamolock v0.0.0-20260926163104-7b16c2d48121
-	github.com/nathants/go-libsodium v0.0.0-20260907150908-165cd76c0d68
+	github.com/nathants/go-dynamolock v0.0.0-20260928041003-08a519ef9d97
+	github.com/nathants/go-libsodium v0.0.0-20260928035040-1495d2d7758a
 	golang.org/x/crypto v0.57.0
 	golang.org/x/sys v0.48.0
 )

@@ -36,8 +36,8 @@ const (
 	// The last helper before recipient key chains.
 	preKeychainRevision  = "d31fda32401e60c41338019f04d3ab667cf1e124"
 	preKeychainLibsodium = "v0.0.0-20260502104057-4e1a79aae4f3"
-	// Tree-identical to 3ebf0a3, the last helper before libaws removal. Its
-	// go-libsodium matches current code, so publishPreLibawsHistory's legacy
+	// Tree-identical to 3ebf0a3, the last helper before libaws removal. Later
+	// helpers also used its go-libsodium, so publishPreLibawsHistory's legacy
 	// layout check is what rejects a newer producer.
 	preLibawsRevision  = "672701aae88116fe04e9e391cf942db1c6066024"
 	preLibawsLibsodium = "v0.0.0-20260907150908-165cd76c0d68"
