@@ -90,9 +90,10 @@ func TestBundleCancellationKillsPackObjects(t *testing.T) {
 		<-done
 		t.Fatal("cancellation left pack-objects holding the output pipes")
 	}
-	// A killed orphan can briefly remain a zombie until init reaps it.
+	// A killed orphan can briefly remain a zombie until init reaps it, or be
+	// seen dead (X) while it is being reaped.
 	status, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pack))
-	if err == nil && !strings.Contains(string(status), "State:\tZ") {
+	if state := string(status); err == nil && !strings.Contains(state, "State:\tZ") && !strings.Contains(state, "State:\tX") {
 		t.Fatalf("pack-objects remained alive after cancellation:\n%s", status)
 	}
 }
