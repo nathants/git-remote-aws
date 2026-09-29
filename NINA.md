@@ -299,7 +299,7 @@ is a separate administrative action; stop writers before doing so.
 
 ### Live AWS gate
 
-- Run `GOTOOLCHAIN=local GOFLAGS=-race go test -count=1 -timeout=60m ./...` with
+- Run `GOTOOLCHAIN=local GOFLAGS=-race go test -count=1 -timeout=90m ./...` with
   credentials and a region for an independently known scratch account, and
   `GIT_REMOTE_AWS_TEST_ACCOUNT` set to that account. Live tests fail, never skip,
   when it is unset. Tests verify the account through STS before any helper runs
