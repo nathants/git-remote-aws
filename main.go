@@ -268,6 +268,7 @@ func (clients *awsClients) push(requestCtx context.Context, table, bucket, prefi
 		hashRemote := hashEnd(last(bundles).Range)
 		contains, _ := gitBranchContains(ctx, hash, hashRemote)
 		if !contains {
+			logPushComparison(ctx, localRef, hash, hashRemote)
 			panic("remote has new commits, pull before pushing")
 		}
 	}
@@ -603,7 +604,7 @@ func optionalString(value string) *string {
 }
 
 // git helper list
-func (clients *awsClients) list(ctx context.Context, table, bucket, prefix string) {
+func (clients *awsClients) list(ctx context.Context, table, bucket, prefix string, forPush bool) {
 
 	repoMeta, m, err := clients.readPublishedMetadata(ctx, table, bucket, prefix)
 	if err != nil {
@@ -620,6 +621,18 @@ func (clients *awsClients) list(ctx context.Context, table, bucket, prefix strin
 	if m != nil {
 		// if remote bundles exist, print the latest hash
 		hash := m.Tip
+		if forPush {
+			// Git can reject the push immediately after this advertisement,
+			// without ever entering our push handler. Compare the same-named
+			// local branch; this helper does not support branch renaming.
+			ref := "refs/heads/" + branch
+			local, err := gitCommand(ctx, "rev-parse", "--verify", "--quiet", ref+"^{commit}").Output()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "push comparison: ref=%s local=unavailable remote=%s (%v)\n", ref, hash, err)
+			} else {
+				logPushComparison(ctx, ref, strings.TrimSpace(string(local)), hash)
+			}
+		}
 		if len(hash) == 64 {
 			fmt.Println(":object-format sha256")
 		}
@@ -751,7 +764,7 @@ func (clients *awsClients) helperCommand(ctx context.Context, table, bucket, pre
 				panic(err)
 			}
 		}
-		clients.list(ctx, table, bucket, prefix)
+		clients.list(ctx, table, bucket, prefix, command == "list for-push")
 	} else if strings.HasPrefix(command, "push ") {
 		clients.push(ctx, table, bucket, prefix, command)
 	} else if strings.HasPrefix(command, "fetch ") {
